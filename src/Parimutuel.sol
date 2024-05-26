@@ -14,33 +14,29 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "lib/foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
 
 contract Parimutuel is Math {
-    address public admin;
-    AggregatorV3Interface public priceOracle;
-    IERC20 public settlementToken;
+    address public admin; /// @notice Address of the admin.
+    AggregatorV3Interface public priceOracle; /// @notice Price oracle interface.
+    IERC20 public settlementToken; /// @notice Settlement token interface.
 
-    uint256 public shortTokens;
-    uint256 public longTokens;
-    uint256 public shortProfits;
-    uint256 public longProfits;
-    uint256 public shortShares;
-    uint256 public longShares;
+    uint256 public shortTokens; /// @notice Total short tokens.
+    uint256 public longTokens; /// @notice Total long tokens.
+    uint256 public shortProfits; /// @notice Total short profits.
+    uint256 public longProfits; /// @notice Total long profits.
+    uint256 public shortShares; /// @notice Total short shares.
+    uint256 public longShares; /// @notice Total long shares.
 
-    mapping(address => uint256) public balance;
-    mapping(address => Position) public shorts;
-    mapping(address => Position) public longs;
+    mapping(address => uint256) public balance; /// @notice User balances.
+    mapping(address => Position) public shorts; /// @notice User short positions.
+    mapping(address => Position) public longs; /// @notice User long positions.
 
-    uint256 public constant FUNDING_INTERVAL = 21600;
-    uint256 public constant FUNDING_PERIODS = 1460;
-    uint256 public constant MIN_LEVERAGE = 1;
-    uint256 public constant MAX_LEVERAGE = 100;
-    uint256 public constant PRECISION = 10 ** 18;
-    uint256 public constant MIN_MARGIN = PRECISION;
+    uint256 public constant FUNDING_INTERVAL = 21600; /// @notice Funding interval.
+    uint256 public constant FUNDING_PERIODS = 1460; /// @notice Number of funding periods.
+    uint256 public constant MIN_LEVERAGE = 1; /// @notice Minimum leverage.
+    uint256 public constant MAX_LEVERAGE = 100; /// @notice Maximum leverage.
+    uint256 public constant PRECISION = 10 ** 18; /// @notice Precision value.
+    uint256 public constant MIN_MARGIN = PRECISION; /// @notice Minimum margin.
 
-    enum Direction {
-        Short,
-        Long
-    }
-
+    /// @notice Position structure.
     struct Position {
         bool active;
         uint256 margin;
@@ -53,38 +49,44 @@ contract Parimutuel is Math {
         uint256 funding;
     }
 
-    error AmountMustBeGreaterThanZero();
-    error TransferFailed();
-    error InsufficientBalance();
-    error InsufficientMargin();
-    error InvalidLeverage();
-    error NoActivePosition(Direction direction);
-    error NotLiquidatable();
-    error NotCloseableAtLoss();
-    error NotCloseableAtProfit();
-    error FundingRateNotDue();
+    error AmountMustBeGreaterThanZero(); /// @notice Error for zero amount.
+    error TransferFailed(); /// @notice Error for failed transfer.
+    error InsufficientBalance(); /// @notice Error for insufficient balance.
+    error InsufficientMargin(); /// @notice Error for insufficient margin.
+    error InvalidLeverage(); /// @notice Error for invalid leverage.
+    error NoActiveShort(); /// @notice Error for no active short position.
+    error NoActiveLong(); /// @notice Error for no active long position.
+    error NotLiquidatable(); /// @notice Error for not being liquidatable.
+    error NotCloseableAtLoss(); /// @notice Error for not closeable at loss.
+    error NotCloseableAtProfit(); /// @notice Error for not closeable at profit.
+    error FundingRateNotDue(); /// @notice Error for funding rate not due.
 
-    event Deposit(address indexed user, uint256 amount);
-    event Withdraw(address indexed user, uint256 amount);
-    event OpenPosition(Position indexed position, Direction direction);
-    event FundingPaid(Position indexed position, Direction direction);
-    event MarginAdded(Position indexed position, Direction direction);
-    event PositionLiquidated(Position indexed position, Direction direction);
-    event PositionClosedAtLoss(Position indexed position, Direction direction);
-    event PositionClosedAtProfit(
-        Position indexed position,
-        Direction direction
-    );
+    event Deposit(address indexed user, uint256 amount); /// @notice Event for deposits.
+    event Withdraw(address indexed user, uint256 amount); /// @notice Event for withdrawals.
+    event OpenShort(Position indexed short); /// @notice Event for opening short positions.
+    event ShortLiquidated(Position indexed short); /// @notice Event for short position liquidation.
+    event ShortClosedAtLoss(Position indexed short); /// @notice Event for closing short position at loss.
+    event ShortClosedAtProfit(Position indexed short); /// @notice Event for closing short position at profit.
+    event OpenLong(Position indexed short); /// @notice Event for opening long positions.
+    event LongLiquidated(Position indexed short); /// @notice Event for long position liquidation.
+    event LongClosedAtLoss(Position indexed short); /// @notice Event for closing long position at loss.
+    event LongClosedAtProfit(Position indexed short); /// @notice Event for closing long position at profit.
+    event ShortFundingPaid(Position indexed short); /// @notice Event for paying short funding.
+    event LongFundingPaid(Position indexed long); /// @notice Event for paying long funding.
+    event MarginAddedShort(Position indexed short); /// @notice Event for adding margin to short position.
+    event MarginAddedLong(Position indexed short); /// @notice Event for adding margin to long position.
 
-    /// @notice Constructor initializes the contract with the price oracle and settlement token addresses.
-    /// @param _priceOracle Address of the price oracle contract.
-    /// @param _settlementToken Address of the settlement token contract.
+    /// @notice Constructor to initialize the contract with oracle and settlement token addresses.
+    /// @param _priceOracle Address of the price oracle.
+    /// @param _settlementToken Address of the settlement token.
     constructor(address _priceOracle, address _settlementToken) {
         priceOracle = AggregatorV3Interface(_priceOracle);
         settlementToken = IERC20(_settlementToken);
         admin = msg.sender;
     }
 
+    /// @notice Modifier to check if the user has sufficient balance.
+    /// @param amount The amount to check.
     modifier sufficientBalance(uint256 amount) {
         if (balance[msg.sender] < amount) {
             revert InsufficientBalance();
@@ -92,8 +94,8 @@ contract Parimutuel is Math {
         _;
     }
 
-    /// @notice Returns the current price from the price oracle.
-    /// @return The current price as a uint256.
+    /// @notice Returns the current price from the oracle.
+    /// @return The current price.
     function currentPrice() public view returns (uint256) {
         (, int256 price, , , ) = AggregatorV3Interface(priceOracle)
             .latestRoundData();
@@ -101,8 +103,8 @@ contract Parimutuel is Math {
         return uint256(price);
     }
 
-    /// @notice Deposits a specified amount of settlement tokens into the contract.
-    /// @param amount The amount of tokens to deposit.
+    /// @notice Deposit an amount of settlement tokens.
+    /// @param amount The amount to deposit.
     function deposit(uint256 amount) public {
         if (amount == 0) revert AmountMustBeGreaterThanZero();
 
@@ -117,8 +119,8 @@ contract Parimutuel is Math {
         emit Deposit(msg.sender, amount);
     }
 
-    /// @notice Withdraws a specified amount of settlement tokens from the contract.
-    /// @param amount The amount of tokens to withdraw.
+    /// @notice Withdraw an amount of settlement tokens.
+    /// @param amount The amount to withdraw.
     function withdraw(uint256 amount) public sufficientBalance(amount) {
         if (amount == 0) revert AmountMustBeGreaterThanZero();
 
@@ -130,14 +132,143 @@ contract Parimutuel is Math {
         emit Withdraw(msg.sender, amount);
     }
 
-    /// @notice Opens a new position (short or long) with the specified margin and leverage.
-    /// @param margin The margin amount for the position.
-    /// @param leverage The leverage for the position.
-    /// @param direction The direction of the position (short or long).
-    function openPosition(
+    /// @notice Open a short position with specified margin and leverage.
+    /// @param margin The margin amount.
+    /// @param leverage The leverage factor.
+    function openShort(
         uint256 margin,
-        uint256 leverage,
-        Direction direction
+        uint256 leverage
+    ) public sufficientBalance(margin) {
+        if (margin < MIN_MARGIN) revert InsufficientMargin();
+        if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE)
+            revert InvalidLeverage();
+
+        balance[msg.sender] -= margin;
+
+        uint256 tokens = margin * leverage;
+        uint256 entryPrice = currentPrice();
+        uint256 liquidationPrice = (entryPrice * (100 + leverage)) / 100;
+        uint256 profitPrice = (entryPrice * (100 - leverage)) / 100;
+        uint256 shares = Math.sqrt(shortTokens + tokens) - shortShares;
+
+        uint256 totalTokens = shortTokens + tokens;
+        uint256 dilution = (tokens * PRECISION) / totalTokens;
+        uint256 leverageFee = (dilution * margin) / PRECISION;
+
+        margin -= leverageFee; // Adjusting margin by leverage fee
+        shortProfits += leverageFee;
+        shortTokens += tokens;
+        shortShares += shares;
+
+        shorts[msg.sender] = Position({
+            active: true,
+            margin: margin,
+            leverage: leverage,
+            tokens: tokens,
+            entry: entryPrice,
+            liquidation: liquidationPrice,
+            profit: profitPrice,
+            shares: shares,
+            funding: block.timestamp + FUNDING_INTERVAL
+        });
+
+        emit OpenShort(shorts[msg.sender]);
+    }
+
+    /// @notice Close the short position of the caller.
+    function closeShort() public {
+        Position storage position = shorts[msg.sender];
+        if (!position.active) revert NoActiveShort();
+
+        uint256 _currentPrice = currentPrice();
+
+        if (_currentPrice >= position.liquidation) {
+            liquidateShort(msg.sender);
+        } else if (_currentPrice > position.entry) {
+            closeShortLoss();
+        } else {
+            closeShortProfit();
+        }
+    }
+
+    /// @notice Liquidate the short position of a user.
+    /// @param user The address of the user.
+    function liquidateShort(address user) internal {
+        Position storage position = shorts[user];
+        if (!position.active) revert NoActiveShort();
+
+        uint256 _currentPrice = currentPrice();
+        if (_currentPrice < position.liquidation) revert NotLiquidatable();
+
+        shortTokens -= position.tokens;
+        shortShares -= position.shares;
+        longProfits += position.margin;
+
+        emit ShortLiquidated(position);
+        delete shorts[user];
+    }
+
+    /// @notice Close the short position at a loss.
+    function closeShortLoss() internal {
+        Position storage position = shorts[msg.sender];
+        if (!position.active) revert NoActiveShort();
+
+        uint256 _currentPrice = currentPrice();
+
+        if (
+            _currentPrice <= position.entry ||
+            _currentPrice >= position.liquidation
+        ) {
+            revert NotCloseableAtLoss();
+        }
+
+        uint256 lossRatio = ((_currentPrice - position.entry) * PRECISION) /
+            (position.liquidation - position.entry);
+        uint256 loss = (position.margin * lossRatio) / PRECISION;
+
+        balance[msg.sender] += position.margin - loss;
+        longProfits += loss;
+        shortTokens -= position.tokens;
+        shortShares -= position.shares;
+
+        emit ShortClosedAtLoss(position);
+        delete shorts[msg.sender];
+    }
+
+    /// @notice Close the short position at a profit.
+    function closeShortProfit() internal {
+        Position storage position = shorts[msg.sender];
+        if (!position.active) revert NoActiveShort();
+
+        uint256 _currentPrice = currentPrice();
+        if (_currentPrice > position.entry) revert NotCloseableAtProfit();
+
+        uint256 profit;
+        if (_currentPrice <= position.profit) {
+            profit = (position.shares * shortProfits) / shortShares;
+        } else {
+            uint256 profitRatio = ((_currentPrice - position.profit) *
+                PRECISION) / (position.entry - position.profit);
+            profit =
+                (position.shares * shortProfits * profitRatio) /
+                (shortShares * PRECISION);
+        }
+
+        balance[msg.sender] += position.margin + profit;
+        shortProfits -= profit;
+        shortTokens -= position.tokens;
+        shortShares -= position.shares;
+
+        emit ShortClosedAtProfit(position);
+        delete shorts[msg.sender];
+    }
+
+    /// @notice Open a long position with specified margin and leverage.
+    /// @param margin The margin amount.
+    /// @param leverage The leverage factor.
+    function openLong(
+        uint256 margin,
+        uint256 leverage
     ) public sufficientBalance(margin) {
         if (margin < MIN_MARGIN) revert InsufficientMargin();
         if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE) {
@@ -149,244 +280,129 @@ contract Parimutuel is Math {
         uint256 tokens = margin * leverage;
         uint256 entryPrice = currentPrice();
 
-        uint256 liquidationPrice = direction == Direction.Short
-            ? (entryPrice * (100 + leverage)) / 100
-            : (entryPrice * (100 - leverage)) / 100;
-        uint256 profitPrice = direction == Direction.Short
-            ? (entryPrice * (100 - leverage)) / 100
-            : (entryPrice * (100 + leverage)) / 100;
+        uint256 liquidationPrice = (entryPrice * (100 - leverage)) / 100;
+        uint256 profitPrice = (entryPrice * (100 + leverage)) / 100;
+        uint256 shares = Math.sqrt(longTokens + tokens) - longShares;
 
-        uint256 shares;
-        if (direction == Direction.Short) {
-            shares = (shortTokens > 0)
-                ? (tokens * PRECISION) / shortTokens
-                : tokens * PRECISION;
-            shortShares += shares;
-            shortTokens += tokens;
-            shorts[msg.sender] = Position({
-                active: true,
-                margin: margin,
-                leverage: leverage,
-                tokens: tokens,
-                entry: entryPrice,
-                liquidation: liquidationPrice,
-                profit: profitPrice,
-                shares: shares,
-                funding: block.timestamp + FUNDING_INTERVAL
-            });
-        } else {
-            shares = (longTokens > 0)
-                ? (tokens * PRECISION) / longTokens
-                : tokens * PRECISION;
-            longShares += shares;
-            longTokens += tokens;
-            longs[msg.sender] = Position({
-                active: true,
-                margin: margin,
-                leverage: leverage,
-                tokens: tokens,
-                entry: entryPrice,
-                liquidation: liquidationPrice,
-                profit: profitPrice,
-                shares: shares,
-                funding: block.timestamp + FUNDING_INTERVAL
-            });
-        }
+        uint256 totalTokens = longTokens + tokens;
+        uint256 dilution = (tokens * PRECISION) / totalTokens;
+        uint256 leverageFee = (dilution * margin) / PRECISION;
 
-        emit OpenPosition(
-            direction == Direction.Short
-                ? shorts[msg.sender]
-                : longs[msg.sender],
-            direction
-        );
+        margin -= leverageFee;
+        longProfits += leverageFee;
+        longTokens += tokens;
+        longShares += shares;
+
+        longs[msg.sender] = Position({
+            active: true,
+            margin: margin,
+            leverage: leverage,
+            tokens: tokens,
+            entry: entryPrice,
+            liquidation: liquidationPrice,
+            profit: profitPrice,
+            shares: shares,
+            funding: block.timestamp + FUNDING_INTERVAL
+        });
+
+        emit OpenLong(longs[msg.sender]);
     }
 
-    /// @notice Closes the position (short or long) for the sender.
-    /// @param direction The direction of the position to close.
-    function closePosition(Direction direction) public {
-        Position storage position = direction == Direction.Short
-            ? shorts[msg.sender]
-            : longs[msg.sender];
-        if (!position.active) {
-            revert NoActivePosition(direction);
-        }
+    /// @notice Close the long position of the caller.
+    function closeLong() public {
+        Position storage position = longs[msg.sender];
+        if (!position.active) revert NoActiveLong();
 
         uint256 _currentPrice = currentPrice();
 
-        if (
-            (direction == Direction.Short &&
-                _currentPrice >= position.liquidation) ||
-            (direction == Direction.Long &&
-                _currentPrice <= position.liquidation)
-        ) {
-            liquidatePosition(msg.sender, direction);
-        } else if (
-            (direction == Direction.Short && _currentPrice > position.entry) ||
-            (direction == Direction.Long && _currentPrice < position.entry)
-        ) {
-            closePositionLoss(direction);
+        if (_currentPrice <= position.liquidation) {
+            liquidateLong(msg.sender);
+        } else if (_currentPrice < position.entry) {
+            closeLongLoss();
         } else {
-            closePositionProfit(direction);
+            closeLongProfit();
         }
     }
 
-    /// @notice Liquidates the position (short or long) for the specified user.
-    /// @param user The address of the user whose position is to be liquidated.
-    /// @param direction The direction of the position to liquidate.
-    function liquidatePosition(address user, Direction direction) public {
-        Position storage position = direction == Direction.Short
-            ? shorts[user]
-            : longs[user];
-        if (!position.active) {
-            revert NoActivePosition(direction);
-        }
+    /// @notice Liquidate the long position of a user.
+    /// @param user The address of the user.
+    function liquidateLong(address user) internal {
+        Position storage position = longs[user];
+        if (!position.active) revert NoActiveLong();
 
         uint256 _currentPrice = currentPrice();
-        if (
-            (direction == Direction.Short &&
-                _currentPrice < position.liquidation) ||
-            (direction == Direction.Long &&
-                _currentPrice > position.liquidation)
-        ) revert NotLiquidatable();
+        if (_currentPrice > position.liquidation) revert NotLiquidatable();
 
-        if (direction == Direction.Short) {
-            shortTokens -= position.tokens;
-            shortShares -= position.shares;
-            longProfits += position.margin;
-        } else {
-            longTokens -= position.tokens;
-            longShares -= position.shares;
-            shortProfits += position.margin;
-        }
+        longTokens -= position.tokens;
+        longShares -= position.shares;
+        shortProfits += position.margin;
 
-        emit PositionLiquidated(position, direction);
-        resetPosition(position);
+        emit LongLiquidated(position);
+        delete longs[user];
     }
 
-    /// @notice Closes the position at a loss for the sender.
-    /// @param direction The direction of the position to close.
-    function closePositionLoss(Direction direction) internal {
-        Position storage position = direction == Direction.Short
-            ? shorts[msg.sender]
-            : longs[msg.sender];
-        if (!position.active) {
-            revert NoActivePosition(direction);
-        }
+    /// @notice Close the long position at a loss.
+    function closeLongLoss() internal {
+        Position storage position = longs[msg.sender];
+        if (!position.active) revert NoActiveLong();
 
         uint256 _currentPrice = currentPrice();
-
         if (
-            (direction == Direction.Short &&
-                (_currentPrice <= position.entry ||
-                    _currentPrice >= position.liquidation)) ||
-            (direction == Direction.Long &&
-                (_currentPrice >= position.entry ||
-                    _currentPrice <= position.liquidation))
+            _currentPrice > position.entry ||
+            _currentPrice < position.liquidation
         ) {
             revert NotCloseableAtLoss();
         }
 
-        uint256 lossRatio = direction == Direction.Short
-            ? ((_currentPrice - position.entry) * PRECISION) /
-                (position.liquidation - position.entry)
-            : ((position.entry - _currentPrice) * PRECISION) /
-                (position.entry - position.liquidation);
+        uint256 lossRatio = ((position.entry - _currentPrice) * PRECISION) /
+            (position.entry - position.liquidation);
         uint256 loss = (position.margin * lossRatio) / PRECISION;
 
         balance[msg.sender] += position.margin - loss;
-        if (direction == Direction.Short) {
-            longProfits += loss;
-            shortTokens -= position.tokens;
-            shortShares -= position.shares;
-        } else {
-            shortProfits += loss;
-            longTokens -= position.tokens;
-            longShares -= position.shares;
-        }
+        shortProfits += loss;
+        longTokens -= position.tokens;
+        longShares -= position.shares;
 
-        emit PositionClosedAtLoss(position, direction);
-        resetPosition(position);
+        emit LongClosedAtLoss(position);
+        delete longs[msg.sender];
     }
 
-    /// @notice Closes the position at a profit for the sender.
-    /// @param direction The direction of the position to close.
-    function closePositionProfit(Direction direction) internal {
-        Position storage position = direction == Direction.Short
-            ? shorts[msg.sender]
-            : longs[msg.sender];
-        if (!position.active) {
-            revert NoActivePosition(direction);
-        }
+    /// @notice Close the long position at a profit.
+    function closeLongProfit() internal {
+        Position storage position = longs[msg.sender];
+        if (!position.active) revert NoActiveLong();
 
         uint256 _currentPrice = currentPrice();
-        if (
-            (direction == Direction.Short && _currentPrice > position.entry) ||
-            (direction == Direction.Long && _currentPrice < position.entry)
-        ) revert NotCloseableAtProfit();
+        if (_currentPrice < position.entry) revert NotCloseableAtProfit();
 
         uint256 profit;
-        if (
-            (direction == Direction.Short &&
-                _currentPrice <= position.profit) ||
-            (direction == Direction.Long && _currentPrice >= position.profit)
-        ) {
-            profit =
-                (position.shares *
-                    (
-                        direction == Direction.Short
-                            ? shortProfits
-                            : longProfits
-                    )) /
-                (direction == Direction.Short ? shortShares : longShares);
+        if (_currentPrice >= position.profit) {
+            profit = (position.shares * longProfits) / longShares;
         } else {
-            uint256 profitRatio = direction == Direction.Short
-                ? ((_currentPrice - position.profit) * PRECISION) /
-                    (position.entry - position.profit)
-                : ((_currentPrice - position.entry) * PRECISION) /
-                    (position.profit - position.entry);
+            uint256 profitRatio = ((_currentPrice - position.entry) *
+                PRECISION) / (position.profit - position.entry);
             profit =
-                (position.shares *
-                    (
-                        direction == Direction.Short
-                            ? shortProfits
-                            : longProfits
-                    ) *
-                    profitRatio) /
-                ((direction == Direction.Short ? shortShares : longShares) *
-                    PRECISION);
+                (position.shares * longProfits * profitRatio) /
+                (longShares * PRECISION);
         }
 
         balance[msg.sender] += position.margin + profit;
-        if (direction == Direction.Short) {
-            shortProfits -= profit;
-            shortTokens -= position.tokens;
-            shortShares -= position.shares;
-        } else {
-            longProfits -= profit;
-            longTokens -= position.tokens;
-            longShares -= position.shares;
-        }
+        longProfits -= profit;
+        longTokens -= position.tokens;
+        longShares -= position.shares;
 
-        emit PositionClosedAtProfit(position, direction);
-        resetPosition(position);
+        emit LongClosedAtProfit(position);
+        delete longs[msg.sender];
     }
 
-    /// @notice Pays the funding rate for the specified user's position.
-    /// @param user The address of the user whose funding rate is to be paid.
-    /// @param direction The direction of the position.
-    function fundingRate(address user, Direction direction) public {
-        Position storage position = direction == Direction.Short
-            ? shorts[user]
-            : longs[user];
-        if (!position.active) {
-            revert NoActivePosition(direction);
-        }
+    /// @notice Update the funding rate for a short position.
+    /// @param user The address of the user.
+    function fundingRateShort(address user) public {
+        Position storage position = shorts[user];
+        if (!position.active) revert NoActiveShort();
         if (position.funding > block.timestamp) revert FundingRateNotDue();
 
-        if (
-            (direction == Direction.Short && shortTokens <= longTokens) ||
-            (direction == Direction.Long && longTokens <= shortTokens)
-        ) {
+        if (shortTokens <= longTokens) {
             position.funding += FUNDING_INTERVAL;
             return;
         }
@@ -395,87 +411,121 @@ contract Parimutuel is Math {
         uint256 shortRatio = (shortTokens * 100) / totalTokens;
         uint256 longRatio = 100 - shortRatio;
 
-        uint256 fundingFeePercentage = direction == Direction.Short
-            ? (shortRatio - longRatio) / FUNDING_PERIODS
-            : (longRatio - shortRatio) / FUNDING_PERIODS;
+        uint256 fundingFeePercentage = (shortRatio - longRatio) /
+            FUNDING_PERIODS;
         uint256 fundingFee = (position.margin * fundingFeePercentage) / 100;
 
         if (fundingFee >= position.margin) {
-            if (direction == Direction.Short) {
-                shortTokens -= position.tokens;
-                shortShares -= position.shares;
-                longProfits += position.margin;
-            } else {
-                longTokens -= position.tokens;
-                longShares -= position.shares;
-                shortProfits += position.margin;
-            }
+            shortTokens -= position.tokens;
+            shortShares -= position.shares;
+            longProfits += position.margin;
 
-            emit PositionLiquidated(position, direction);
-            resetPosition(position);
+            emit ShortLiquidated(position);
+            delete shorts[user];
         } else {
             position.margin -= fundingFee;
-            if (direction == Direction.Short) {
-                longProfits += fundingFee;
-            } else {
-                shortProfits += fundingFee;
-            }
+            longProfits += fundingFee;
 
             position.leverage = (position.tokens * PRECISION) / position.margin;
-            position.liquidation = direction == Direction.Short
-                ? (position.entry * (100 + position.leverage)) / 100
-                : (position.entry * (100 - position.leverage)) / 100;
-            position.profit = direction == Direction.Short
-                ? (position.entry * (100 - position.leverage)) / 100
-                : (position.entry * (100 + position.leverage)) / 100;
+            position.liquidation =
+                (position.entry * (100 + position.leverage)) /
+                100;
+            position.profit =
+                (position.entry * (100 - position.leverage)) /
+                100;
 
             position.funding += FUNDING_INTERVAL;
 
-            emit FundingPaid(position, direction);
+            emit ShortFundingPaid(position);
         }
     }
 
-    /// @notice Adds margin to the specified user's position.
-    /// @param user The address of the user whose margin is to be added.
-    /// @param amount The amount of margin to add.
-    /// @param direction The direction of the position.
-    function addMargin(
-        address user,
-        uint256 amount,
-        Direction direction
-    ) public sufficientBalance(amount) {
-        Position storage position = direction == Direction.Short
-            ? shorts[user]
-            : longs[user];
-        if (!position.active) {
-            revert NoActivePosition(direction);
+    /// @notice Update the funding rate for a long position.
+    /// @param user The address of the user.
+    function fundingRateLong(address user) public {
+        Position storage position = longs[user];
+        if (!position.active) revert NoActiveLong();
+        if (position.funding > block.timestamp) revert FundingRateNotDue();
+
+        if (longTokens <= shortTokens) {
+            position.funding += FUNDING_INTERVAL;
+            return;
         }
+
+        uint256 totalTokens = shortTokens + longTokens;
+        uint256 longRatio = (longTokens * 100) / totalTokens;
+        uint256 shortRatio = 100 - longRatio;
+
+        uint256 fundingFeePercentage = (longRatio - shortRatio) /
+            FUNDING_PERIODS;
+        uint256 fundingFee = (position.margin * fundingFeePercentage) / 100;
+
+        if (fundingFee >= position.margin) {
+            longTokens -= position.tokens;
+            longShares -= position.shares;
+            shortProfits += position.margin;
+
+            emit LongLiquidated(position);
+            delete longs[user];
+        } else {
+            position.margin -= fundingFee;
+            shortProfits += fundingFee;
+
+            position.leverage = (position.tokens * PRECISION) / position.margin;
+            position.liquidation =
+                (position.entry * (100 - position.leverage)) /
+                100;
+            position.profit =
+                (position.entry * (100 + position.leverage)) /
+                100;
+
+            position.funding += FUNDING_INTERVAL;
+
+            emit LongFundingPaid(position);
+        }
+    }
+
+    /// @notice Add margin to a short position.
+    /// @param user The address of the user.
+    /// @param amount The amount to add.
+    function addMarginShort(
+        address user,
+        uint256 amount
+    ) public sufficientBalance(amount) {
+        Position storage position = shorts[user];
+        if (!position.active) revert NoActiveShort();
 
         balance[user] -= amount;
         position.margin += amount;
 
         position.leverage = (position.tokens * PRECISION) / position.margin;
-        position.profit = direction == Direction.Short
-            ? (position.entry * (100 - position.leverage)) / 100
-            : (position.entry * (100 + position.leverage)) / 100;
-        position.liquidation = direction == Direction.Short
-            ? (position.entry * (100 + position.leverage)) / 100
-            : (position.entry * (100 - position.leverage)) / 100;
+        position.profit = (position.entry * (100 - position.leverage)) / 100;
+        position.liquidation =
+            (position.entry * (100 + position.leverage)) /
+            100;
 
-        emit MarginAdded(position, direction);
+        emit MarginAddedShort(position);
     }
 
-    /// @notice Resets the specified position.
-    /// @param position The position to reset.
-    function resetPosition(Position storage position) internal {
-        position.active = false;
-        position.margin = 0;
-        position.leverage = 0;
-        position.tokens = 0;
-        position.entry = 0;
-        position.liquidation = 0;
-        position.profit = 0;
-        position.shares = 0;
-        position.funding = 0;
+    /// @notice Add margin to a long position.
+    /// @param user The address of the user.
+    /// @param amount The amount to add.
+    function addMarginLong(
+        address user,
+        uint256 amount
+    ) public sufficientBalance(amount) {
+        Position storage position = longs[user];
+        if (!position.active) revert NoActiveLong();
+
+        balance[user] -= amount;
+        position.margin += amount;
+
+        position.leverage = (position.tokens * PRECISION) / position.margin;
+        position.profit = (position.entry * (100 + position.leverage)) / 100;
+        position.liquidation =
+            (position.entry * (100 - position.leverage)) /
+            100;
+
+        emit MarginAddedLong(position);
     }
 }
