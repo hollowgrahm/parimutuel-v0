@@ -11,7 +11,8 @@ pragma solidity 0.8.20;
 
 import {Math} from "./libraries/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "lib/foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
+//import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 contract Parimutuel is Math {
     /* ========== STATE VARIABLES ========== */
@@ -100,7 +101,8 @@ contract Parimutuel is Math {
         /// @notice Chainlink AggregatorV3Interface price feed
         /// @return price: Latest asset price as uint256
 
-        (, int256 price,,,) = AggregatorV3Interface(priceOracle).latestRoundData();
+        (, int256 price, , , ) = AggregatorV3Interface(priceOracle)
+            .latestRoundData();
         if (price < 0) price = 0;
         return uint256(price);
     }
@@ -127,19 +129,23 @@ contract Parimutuel is Math {
         balance[msg.sender] += 1000 * PRECISION;
     }
 
-    function openShort(uint256 _margin, uint256 _leverage) external enoughFunds(_margin) returns (Position memory) {
+    function openShort(
+        uint256 _margin,
+        uint256 _leverage
+    ) external enoughFunds(_margin) returns (Position memory) {
         /// @notice Opens a short position
         /// @param  _margin: Amount of settlement tokens to collateralize position
         /// @param  _leverage: Multiplier on position size to increase exposure
         /// @return Position that was opened
 
-        if (_leverage < MIN_LEVERAGE || _leverage > MAX_LEVERAGE) revert LeverageNotAllowed();
+        if (_leverage < MIN_LEVERAGE || _leverage > MAX_LEVERAGE)
+            revert LeverageNotAllowed();
         if (shorts[msg.sender].active == true) revert ShortAlreadyOpen();
 
         uint256 _tokens = _margin * _leverage;
         uint256 _dilutedShorts = shortTokens + _tokens;
-        uint256 _dilutionRatio = _tokens * PRECISION / _dilutedShorts;
-        uint256 _leverageFee = _margin * _dilutionRatio / PRECISION;
+        uint256 _dilutionRatio = (_tokens * PRECISION) / _dilutedShorts;
+        uint256 _leverageFee = (_margin * _dilutionRatio) / PRECISION;
         uint256 _updatedMargin = _margin - _leverageFee;
 
         uint256 _entry = currentPrice();
@@ -178,7 +184,8 @@ contract Parimutuel is Math {
         if (_currentPrice >= shorts[msg.sender].liquidation) {
             liquidatePosition(msg.sender);
         } else if (_currentPrice < shorts[msg.sender].entry) {
-            if (_currentPrice <= shorts[msg.sender].profit) _closeShortAboveProfit();
+            if (_currentPrice <= shorts[msg.sender].profit)
+                _closeShortAboveProfit();
             else _closeShortBelowProfit(_currentPrice);
         } else {
             _closeShortLoss(_currentPrice);
@@ -190,9 +197,10 @@ contract Parimutuel is Math {
         /// @dev     Charges 0.5% protocol fee on profits
         /// @return  Position that was closed
 
-        uint256 _profitRatio = shorts[msg.sender].shares * PRECISION / shortShares;
-        uint256 _profits = shortProfits * _profitRatio / PRECISION;
-        uint256 _profitsAfterFees = _profits * 995 / 1000;
+        uint256 _profitRatio = (shorts[msg.sender].shares * PRECISION) /
+            shortShares;
+        uint256 _profits = (shortProfits * _profitRatio) / PRECISION;
+        uint256 _profitsAfterFees = (_profits * 995) / 1000;
         uint256 _feesPaid = _profits - _profitsAfterFees;
 
         shortProfits -= _profits;
@@ -206,7 +214,9 @@ contract Parimutuel is Math {
         return shorts[msg.sender];
     }
 
-    function _closeShortBelowProfit(uint256 _currentPrice) internal returns (Position memory) {
+    function _closeShortBelowProfit(
+        uint256 _currentPrice
+    ) internal returns (Position memory) {
         /// @notice  Closes a short position below profit threshold
         /// @param   _currentPrice: current price calculated in previous function
         /// @dev     Charges 0.5% protocol fee on profits
@@ -215,10 +225,11 @@ contract Parimutuel is Math {
         uint256 _entry = shorts[msg.sender].entry;
         uint256 _ratioNumerator = _entry - _currentPrice;
         uint256 _ratioDenominator = _entry - shorts[msg.sender].profit;
-        uint256 _effectiveShares = shorts[msg.sender].shares * _ratioNumerator / _ratioDenominator;
-        uint256 _profitRatio = _effectiveShares * PRECISION / shortShares;
-        uint256 _profits = shortProfits * _profitRatio / PRECISION;
-        uint256 _profitsAfterFees = _profits * 995 / 1000;
+        uint256 _effectiveShares = (shorts[msg.sender].shares *
+            _ratioNumerator) / _ratioDenominator;
+        uint256 _profitRatio = (_effectiveShares * PRECISION) / shortShares;
+        uint256 _profits = (shortProfits * _profitRatio) / PRECISION;
+        uint256 _profitsAfterFees = (_profits * 995) / 1000;
         uint256 _feesPaid = _profits - _profitsAfterFees;
 
         shortProfits -= _profits;
@@ -232,7 +243,9 @@ contract Parimutuel is Math {
         return shorts[msg.sender];
     }
 
-    function _closeShortLoss(uint256 _currentPrice) internal returns (Position memory) {
+    function _closeShortLoss(
+        uint256 _currentPrice
+    ) internal returns (Position memory) {
         /// @notice  Closes a short position at a loss
         /// @param   _currentPrice: current price calculated in previous function
         /// @dev     Does not charge fees on losses
@@ -240,7 +253,8 @@ contract Parimutuel is Math {
         uint256 _liquidation = shorts[msg.sender].liquidation;
         uint256 _ratioNumerator = _liquidation - _currentPrice;
         uint256 _ratioDenominator = _liquidation - shorts[msg.sender].entry;
-        uint256 _redeemableBalance = shorts[msg.sender].margin * _ratioNumerator / _ratioDenominator;
+        uint256 _redeemableBalance = (shorts[msg.sender].margin *
+            _ratioNumerator) / _ratioDenominator;
 
         shorts[msg.sender].margin -= _redeemableBalance;
         balance[msg.sender] += _redeemableBalance;
@@ -253,13 +267,17 @@ contract Parimutuel is Math {
         return shorts[msg.sender];
     }
 
-    function openLong(uint256 _margin, uint256 _leverage) external enoughFunds(_margin) returns (Position memory) {
+    function openLong(
+        uint256 _margin,
+        uint256 _leverage
+    ) external enoughFunds(_margin) returns (Position memory) {
         /// @notice  Opens a long position
         /// @param   _margin: Number of settlement tokens to collateralize position
         /// @param   _leverage: Multiplier on position size to increase exposure
         /// @return Position that was opened
 
-        if (_leverage < MIN_LEVERAGE || _leverage > MAX_LEVERAGE) revert LeverageNotAllowed();
+        if (_leverage < MIN_LEVERAGE || _leverage > MAX_LEVERAGE)
+            revert LeverageNotAllowed();
         if (longs[msg.sender].active == true) revert LongAlreadyOpen();
 
         uint256 _entry = currentPrice();
@@ -299,7 +317,8 @@ contract Parimutuel is Math {
         if (_currentPrice <= longs[msg.sender].liquidation) {
             liquidatePosition(msg.sender);
         } else if (_currentPrice > longs[msg.sender].entry) {
-            if (_currentPrice >= longs[msg.sender].profit) _closeLongAboveProfit();
+            if (_currentPrice >= longs[msg.sender].profit)
+                _closeLongAboveProfit();
             else _closeLongBelowProfit(_currentPrice);
         } else {
             _closeLongLoss(_currentPrice);
@@ -311,9 +330,10 @@ contract Parimutuel is Math {
         /// @dev     Charges 0.5% protocol fee on profits
         /// @return  Position that was closed
 
-        uint256 _profitRatio = longs[msg.sender].shares * PRECISION / longShares;
-        uint256 _profits = longProfits * _profitRatio / PRECISION;
-        uint256 _profitsAfterFees = _profits * 995 / 1000;
+        uint256 _profitRatio = (longs[msg.sender].shares * PRECISION) /
+            longShares;
+        uint256 _profits = (longProfits * _profitRatio) / PRECISION;
+        uint256 _profitsAfterFees = (_profits * 995) / 1000;
         uint256 _feesPaid = _profits - _profitsAfterFees;
 
         longProfits -= _profits;
@@ -327,7 +347,9 @@ contract Parimutuel is Math {
         return longs[msg.sender];
     }
 
-    function _closeLongBelowProfit(uint256 _currentPrice) internal returns (Position memory) {
+    function _closeLongBelowProfit(
+        uint256 _currentPrice
+    ) internal returns (Position memory) {
         /// @notice  Closes a long position below profit threshold
         /// @param   _currentPrice: current price calculated in previous function
         /// @dev     Charges 0.5% protocol fee on profits
@@ -336,10 +358,11 @@ contract Parimutuel is Math {
         uint256 _entry = longs[msg.sender].entry;
         uint256 _ratioNumerator = _currentPrice - _entry;
         uint256 _ratioDenominator = longs[msg.sender].profit - _entry;
-        uint256 _effectiveShares = longs[msg.sender].shares * _ratioNumerator / _ratioDenominator;
-        uint256 _profitRatio = _effectiveShares * PRECISION / longShares;
-        uint256 _profits = longProfits * _profitRatio / PRECISION;
-        uint256 _profitsAfterFees = _profits * 995 / 1000;
+        uint256 _effectiveShares = (longs[msg.sender].shares *
+            _ratioNumerator) / _ratioDenominator;
+        uint256 _profitRatio = (_effectiveShares * PRECISION) / longShares;
+        uint256 _profits = (longProfits * _profitRatio) / PRECISION;
+        uint256 _profitsAfterFees = (_profits * 995) / 1000;
         uint256 _feesPaid = _profits - _profitsAfterFees;
 
         longProfits -= _profits;
@@ -353,7 +376,9 @@ contract Parimutuel is Math {
         return longs[msg.sender];
     }
 
-    function _closeLongLoss(uint256 _currentPrice) internal returns (Position memory) {
+    function _closeLongLoss(
+        uint256 _currentPrice
+    ) internal returns (Position memory) {
         /// @notice  Closes a long position at a loss
         /// @param   _currentPrice: current price calculated in previous function
         /// @dev     Does not charge fees on losses
@@ -362,7 +387,8 @@ contract Parimutuel is Math {
         uint256 _ratioNumerator = _currentPrice - _liquidation;
         uint256 _ratioDenominator = longs[msg.sender].entry - _liquidation;
         // uint256 _redeemableRatio = _currentPrice - _liquidation * PRECISION / longs[msg.sender].entry - _liquidation;
-        uint256 _redeemableBalance = longs[msg.sender].margin * _ratioNumerator / _ratioDenominator;
+        uint256 _redeemableBalance = (longs[msg.sender].margin *
+            _ratioNumerator) / _ratioDenominator;
 
         longs[msg.sender].margin -= _redeemableBalance;
         balance[msg.sender] += _redeemableBalance;
@@ -375,12 +401,15 @@ contract Parimutuel is Math {
         return longs[msg.sender];
     }
 
-    function liquidatePosition(address account) public returns (Position memory) {
+    function liquidatePosition(
+        address account
+    ) public returns (Position memory) {
         /// @notice  Wrapper function to liquidate position based on Position type
         /// @param   account: Address of account to liquidate
 
         if (shorts[account].active == true) {
-            if (currentPrice() < shorts[msg.sender].liquidation) revert NotLiquidatable();
+            if (currentPrice() < shorts[msg.sender].liquidation)
+                revert NotLiquidatable();
 
             longProfits += shorts[account].margin;
             shortTokens -= shorts[account].tokens;
@@ -390,7 +419,8 @@ contract Parimutuel is Math {
             emit Liquidated(shorts[account]);
             return shorts[account];
         } else if (longs[account].active == true) {
-            if (currentPrice() > longs[msg.sender].liquidation) revert NotLiquidatable();
+            if (currentPrice() > longs[msg.sender].liquidation)
+                revert NotLiquidatable();
 
             shortProfits += longs[account].margin;
             longTokens -= longs[account].tokens;
@@ -450,12 +480,16 @@ contract Parimutuel is Math {
         /// @param   account: Address of account to update
         /// @dev     If both sides are equal or funding rate not owed, updates position funding due time
 
-        if (shorts[account].active == true && shortTokens > longTokens) _shortsPayLongs(account);
-        else if (longs[account].active == true && longTokens > shortTokens) _longsPayShorts(account);
+        if (shorts[account].active == true && shortTokens > longTokens)
+            _shortsPayLongs(account);
+        else if (longs[account].active == true && longTokens > shortTokens)
+            _longsPayShorts(account);
         else _updateFunding(account);
     }
 
-    function _shortsPayLongs(address account) internal returns (Position memory) {
+    function _shortsPayLongs(
+        address account
+    ) internal returns (Position memory) {
         /// @notice Funding rate is paid by shorts to longs
         /// @param  account: Address of account to update
         /// @dev    Releverages position, updating new liquidation and profit thresholds
@@ -463,10 +497,17 @@ contract Parimutuel is Math {
 
         if (shorts[account].funding > block.timestamp) revert FundingNotDue();
 
-        uint256 _shortRatio = shortTokens * PRECISION / shortTokens + longTokens;
-        uint256 _longRatio = longTokens * PRECISION / longTokens + shortTokens;
-        uint256 _intervalFundingRate = _shortRatio - _longRatio * PRECISION / FUNDING_PERIODS;
-        uint256 _fundingRateDue = shorts[account].tokens * _intervalFundingRate / shortTokens;
+        uint256 _shortRatio = (shortTokens * PRECISION) /
+            shortTokens +
+            longTokens;
+        uint256 _longRatio = (longTokens * PRECISION) /
+            longTokens +
+            shortTokens;
+        uint256 _intervalFundingRate = _shortRatio -
+            (_longRatio * PRECISION) /
+            FUNDING_PERIODS;
+        uint256 _fundingRateDue = (shorts[account].tokens *
+            _intervalFundingRate) / shortTokens;
 
         if (_fundingRateDue >= shorts[account].margin) {
             longProfits += shorts[account].margin;
@@ -495,7 +536,9 @@ contract Parimutuel is Math {
         }
     }
 
-    function _longsPayShorts(address account) internal returns (Position memory) {
+    function _longsPayShorts(
+        address account
+    ) internal returns (Position memory) {
         /// @notice Funding rate is paid by longs to shorts
         /// @param  account: Address of account to update
         /// @dev    Releverages position, updating new liquidation and profit thresholds
@@ -503,10 +546,17 @@ contract Parimutuel is Math {
 
         if (longs[account].funding > block.timestamp) revert FundingNotDue();
 
-        uint256 _longRatio = longTokens * PRECISION / longTokens + shortTokens;
-        uint256 _shortRatio = shortTokens * PRECISION / shortTokens + longTokens;
-        uint256 _intervalFundingRate = _longRatio - _shortRatio * PRECISION / FUNDING_PERIODS;
-        uint256 _fundingRateDue = longs[account].tokens * _intervalFundingRate / longTokens;
+        uint256 _longRatio = (longTokens * PRECISION) /
+            longTokens +
+            shortTokens;
+        uint256 _shortRatio = (shortTokens * PRECISION) /
+            shortTokens +
+            longTokens;
+        uint256 _intervalFundingRate = _longRatio -
+            (_shortRatio * PRECISION) /
+            FUNDING_PERIODS;
+        uint256 _fundingRateDue = (longs[account].tokens *
+            _intervalFundingRate) / longTokens;
 
         if (_fundingRateDue >= longs[account].margin) {
             shortProfits += longs[account].margin;
@@ -535,7 +585,9 @@ contract Parimutuel is Math {
         }
     }
 
-    function _updateFunding(address account) internal returns (Position memory) {
+    function _updateFunding(
+        address account
+    ) internal returns (Position memory) {
         /// @notice  Triggered when funding rate is balanced euqally
         /// @param   address: Account to update funding rate
 
