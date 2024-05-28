@@ -1,88 +1,156 @@
 const Web3 = require('web3');
-const contractABI = require('./ParimutuelPerpetualsABI.json');
-const contractAddress = '0xYourContractAddressHere';
+const fs = require('fs');
+const dotenv = require('dotenv');
 
-const web3 = new Web3(new Web3.providers.HttpProvider('https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID'));// mainnet configuration
+dotenv.config();
+
+const contractABI = JSON.parse(fs.readFileSync('ParimutuelABI.json'));
+const contractAddress = process.env.CONTRACT_ADDRESS;
+const privateKey = process.env.PRIVATE_KEY;
+
+const web3 = new Web3(new Web3.providers.HttpProvider(`https://mainnet.infura.io/v3/${process.env.INFURA_PROJECT_ID}`));
+const account = web3.eth.accounts.privateKeyToAccount(privateKey);
+web3.eth.accounts.wallet.add(account);
+web3.eth.defaultAccount = account.address;
 
 const contract = new web3.eth.Contract(contractABI, contractAddress);
 
-const account = '0xYourEthereumAddressHere'; // User Ethereum address
-const privateKey = '0xYourPrivateKeyHere'; // User private key
-
-async function getPrice() {
-    const price = await contract.methods.getPrice().call();
+async function getCurrentPrice() {
+    const price = await contract.methods.currentPrice().call();
     console.log(`Current Price: ${price}`);
     return price;
 }
 
-async function openPosition(margin, leverage) {
-    const data = contract.methods.openPosition(margin, leverage).encodeABI();
+async function deposit(amount) {
+    const data = contract.methods.deposit(amount).encodeABI();
 
     const tx = {
         to: contractAddress,
         data,
-        gas: 2000000,
+        gas: 200000,
     };
 
     const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
     const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
 
-    console.log(`Position opened: ${receipt.transactionHash}`);
+    console.log(`Deposit transaction hash: ${receipt.transactionHash}`);
 }
 
-async function closePosition() {
-    const data = contract.methods.closePosition().encodeABI();
+async function withdraw(amount) {
+    const data = contract.methods.withdraw(amount).encodeABI();
 
     const tx = {
         to: contractAddress,
         data,
-        gas: 2000000,
+        gas: 200000,
     };
 
     const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
     const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
 
-    console.log(`Position closed: ${receipt.transactionHash}`);
+    console.log(`Withdraw transaction hash: ${receipt.transactionHash}`);
 }
 
-async function liquidate(userAddress) {
-    const data = contract.methods.liquidate(userAddress).encodeABI();
+async function openShort(margin, leverage) {
+    const data = contract.methods.openShort(margin, leverage).encodeABI();
 
     const tx = {
         to: contractAddress,
         data,
-        gas: 2000000,
+        gas: 300000,
     };
 
     const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
     const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
 
-    console.log(`User liquidated: ${receipt.transactionHash}`);
+    console.log(`Open short position transaction hash: ${receipt.transactionHash}`);
 }
 
-async function applyFundingRate() {
-    const data = contract.methods.applyFundingRate().encodeABI();
+async function closeShort() {
+    const data = contract.methods.closeShort().encodeABI();
 
     const tx = {
         to: contractAddress,
         data,
-        gas: 2000000,
+        gas: 200000,
     };
 
     const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
     const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
 
-    console.log(`Funding rate applied: ${receipt.transactionHash}`);
+    console.log(`Close short position transaction hash: ${receipt.transactionHash}`);
+}
+
+async function openLong(margin, leverage) {
+    const data = contract.methods.openLong(margin, leverage).encodeABI();
+
+    const tx = {
+        to: contractAddress,
+        data,
+        gas: 300000,
+    };
+
+    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+    console.log(`Open long position transaction hash: ${receipt.transactionHash}`);
+}
+
+async function closeLong() {
+    const data = contract.methods.closeLong().encodeABI();
+
+    const tx = {
+        to: contractAddress,
+        data,
+        gas: 200000,
+    };
+
+    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+    console.log(`Close long position transaction hash: ${receipt.transactionHash}`);
+}
+
+async function addMarginShort(user, amount) {
+    const data = contract.methods.addMarginShort(user, amount).encodeABI();
+
+    const tx = {
+        to: contractAddress,
+        data,
+        gas: 200000,
+    };
+
+    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+    console.log(`Add margin to short position transaction hash: ${receipt.transactionHash}`);
+}
+
+async function addMarginLong(user, amount) {
+    const data = contract.methods.addMarginLong(user, amount).encodeABI();
+
+    const tx = {
+        to: contractAddress,
+        data,
+        gas: 200000,
+    };
+
+    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+    console.log(`Add margin to long position transaction hash: ${receipt.transactionHash}`);
 }
 
 // Example usage:
 (async () => {
     try {
-        await getPrice();
-        await openPosition(100, 2); // Example: Open a position with 100 margin and 2x leverage
-        await closePosition();
-        await liquidate('0xAnotherUserAddressHere'); // Example: Liquidate another user's position
-        await applyFundingRate();
+        await getCurrentPrice();
+        await deposit(web3.utils.toWei('1', 'ether')); // Example deposit of 1 ether
+        await openShort(web3.utils.toWei('0.1', 'ether'), 2); // Example: Open a short position with 0.1 ether margin and 2x leverage
+        await closeShort();
+        await openLong(web3.utils.toWei('0.1', 'ether'), 2); // Example: Open a long position with 0.1 ether margin and 2x leverage
+        await closeLong();
+        await withdraw(web3.utils.toWei('0.1', 'ether')); // Example withdrawal of 0.1 ether
     } catch (error) {
         console.error(error);
     }
