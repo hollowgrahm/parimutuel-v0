@@ -1,6 +1,8 @@
 const Web3 = require('web3');
 const fs = require('fs');
 const dotenv = require('dotenv');
+const mongoose = require('mongoose');
+const Event = require('./models/Event');
 
 dotenv.config();
 
@@ -15,143 +17,82 @@ web3.eth.defaultAccount = account.address;
 
 const contract = new web3.eth.Contract(contractABI, contractAddress);
 
-async function getCurrentPrice() {
-    const price = await contract.methods.currentPrice().call();
-    console.log(`Current Price: ${price}`);
-    return price;
-}
+// MongoDB connection
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+}).then(() => console.log('MongoDB connected'))
+  .catch(err => console.log(err));
 
-async function deposit(amount) {
-    const data = contract.methods.deposit(amount).encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 200000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Deposit transaction hash: ${receipt.transactionHash}`);
-}
-
-async function withdraw(amount) {
-    const data = contract.methods.withdraw(amount).encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 200000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Withdraw transaction hash: ${receipt.transactionHash}`);
-}
-
-async function openShort(margin, leverage) {
-    const data = contract.methods.openShort(margin, leverage).encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 300000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Open short position transaction hash: ${receipt.transactionHash}`);
-}
-
-async function closeShort() {
-    const data = contract.methods.closeShort().encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 200000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Close short position transaction hash: ${receipt.transactionHash}`);
-}
-
-async function openLong(margin, leverage) {
-    const data = contract.methods.openLong(margin, leverage).encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 300000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Open long position transaction hash: ${receipt.transactionHash}`);
-}
-
-async function closeLong() {
-    const data = contract.methods.closeLong().encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 200000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Close long position transaction hash: ${receipt.transactionHash}`);
-}
-
-async function addMarginShort(user, amount) {
-    const data = contract.methods.addMarginShort(user, amount).encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 200000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Add margin to short position transaction hash: ${receipt.transactionHash}`);
-}
-
-async function addMarginLong(user, amount) {
-    const data = contract.methods.addMarginLong(user, amount).encodeABI();
-
-    const tx = {
-        to: contractAddress,
-        data,
-        gas: 200000,
-    };
-
-    const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-    console.log(`Add margin to long position transaction hash: ${receipt.transactionHash}`);
-}
-
-// Example usage:
-(async () => {
+async function liquidateShort(user) {
     try {
-        await getCurrentPrice();
-        await deposit(web3.utils.toWei('1', 'ether')); // Example deposit of 1 ether
-        await openShort(web3.utils.toWei('0.1', 'ether'), 2); // Example: Open a short position with 0.1 ether margin and 2x leverage
-        await closeShort();
-        await openLong(web3.utils.toWei('0.1', 'ether'), 2); // Example: Open a long position with 0.1 ether margin and 2x leverage
-        await closeLong();
-        await withdraw(web3.utils.toWei('0.1', 'ether')); // Example withdrawal of 0.1 ether
+        const data = contract.methods.liquidateShort(user).encodeABI();
+
+        const tx = {
+            to: contractAddress,
+            data,
+            gas: 200000,
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log(`Liquidate short position transaction hash: ${receipt.transactionHash}`);
+
+        // Record the event in the database
+        const event = new Event({
+            user: user,
+            transactionHash: receipt.transactionHash,
+        });
+        await event.save();
+
     } catch (error) {
-        console.error(error);
+        console.error(`Error liquidating short position for user ${user}: ${error.message}`);
     }
-})();
+}
+
+async function checkAndLiquidate() {
+    // Example: Array of user addresses to check
+    const users = ['0xUserAddress1', '0xUserAddress2']; // Replace with actual user addresses
+
+    for (const user of users) {
+        await liquidateShort(user);
+    }
+}
+
+// Looping function
+async function startBot() {
+    while (true) {
+        await checkAndLiquidate();
+        await new Promise(resolve => setTimeout(resolve, 60000)); // Wait for 1 minute before next loop
+    }
+}
+
+const eventSchema = new mongoose.Schema({
+    user: String,
+    transactionHash: String,
+    eventType: String,
+    timestamp: { type: Date, default: Date.now },
+});
+
+module.exports = mongoose.model('Event', eventSchema);
+
+
+
+
+
+// Start the bot
+startBot().catch(err => console.error(err));
+
+
+
+
+//create a bot or loop that itterates through DB 
+
+//liquidate short
+//liquidate long
+//funcding rate long and funding rate short  
+
+//have the database log the events for line 41-51
+
+
