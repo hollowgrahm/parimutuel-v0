@@ -10,6 +10,7 @@ pragma solidity 0.8.20;
 // (_______)(___/    \___)|__|  \___)(__\_|_)|___|\__/|___|(__________)     \__|    (__________) \_______) \_______)
 
 import {Math} from "./libraries/Math.sol";
+import "forge-std/console.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "lib/foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
 
@@ -31,22 +32,22 @@ contract Parimutuel is Math {
 
     uint256 public constant FUNDING_INTERVAL = 21600; /// @notice Funding interval.
     uint256 public constant FUNDING_PERIODS = 1460; /// @notice Number of funding periods.
-    uint256 public constant MIN_LEVERAGE = 1; /// @notice Minimum leverage.
-    uint256 public constant MAX_LEVERAGE = 100; /// @notice Maximum leverage.
+    uint256 public constant MIN_LEVERAGE = 1 * PRECISION; /// @notice Minimum leverage.
+    uint256 public constant MAX_LEVERAGE = 100 * PRECISION; /// @notice Maximum leverage.
     uint256 public constant PRECISION = 10 ** 18; /// @notice Precision value.
     uint256 public constant MIN_MARGIN = PRECISION; /// @notice Minimum margin.
 
-    /// @notice Position structure.
+    //// @notice Structure representing a trading position.
     struct Position {
-        bool active;
-        uint256 margin;
-        uint256 leverage;
-        uint256 tokens;
-        uint256 entry;
-        uint256 liquidation;
-        uint256 profit;
-        uint256 shares;
-        uint256 funding;
+        bool active; /// @notice Indicates whether the position is active.
+        uint256 margin; /// @notice The margin amount for the position.
+        uint256 leverage; /// @notice The leverage factor applied to the position.
+        uint256 tokens; /// @notice The number of tokens involved in the position.
+        uint256 entry; /// @notice The entry price of the position.
+        uint256 liquidation; /// @notice The liquidation price of the position.
+        uint256 profit; /// @notice The profit price of the position.
+        uint256 shares; /// @notice The number of shares associated with the position.
+        uint256 funding; /// @notice The next funding timestamp for the position.
     }
 
     error AmountMustBeGreaterThanZero(); /// @notice Error for zero amount.
@@ -88,9 +89,7 @@ contract Parimutuel is Math {
     /// @notice Modifier to check if the user has sufficient balance.
     /// @param amount The amount to check.
     modifier sufficientBalance(uint256 amount) {
-        if (balance[msg.sender] < amount) {
-            revert InsufficientBalance();
-        }
+        if (balance[msg.sender] < amount) revert InsufficientBalance();
         _;
     }
 
@@ -107,7 +106,6 @@ contract Parimutuel is Math {
     /// @param amount The amount to deposit.
     function deposit(uint256 amount) public {
         if (amount == 0) revert AmountMustBeGreaterThanZero();
-
         bool success = settlementToken.transferFrom(
             msg.sender,
             address(this),
@@ -138,7 +136,7 @@ contract Parimutuel is Math {
     function openShort(
         uint256 margin,
         uint256 leverage
-    ) public sufficientBalance(margin) {
+    ) public sufficientBalance(margin) returns (Position memory) {
         if (margin < MIN_MARGIN) revert InsufficientMargin();
         if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE)
             revert InvalidLeverage();
@@ -147,22 +145,29 @@ contract Parimutuel is Math {
 
         uint256 tokens = margin * leverage;
         uint256 entryPrice = currentPrice();
-        uint256 liquidationPrice = (entryPrice * (100 + leverage)) / 100;
-        uint256 profitPrice = (entryPrice * (100 - leverage)) / 100;
+        uint256 liquidationPrice = entryPrice + (entryPrice / leverage);
+        uint256 profitPrice = entryPrice - (entryPrice / leverage);
         uint256 shares = Math.sqrt(shortTokens + tokens) - shortShares;
 
-        uint256 totalTokens = shortTokens + tokens;
-        uint256 dilution = (tokens * PRECISION) / totalTokens;
-        uint256 leverageFee = (dilution * margin) / PRECISION;
+        uint256 leverageFee = 0;
+        uint256 adjustedMargin = margin;
 
-        margin -= leverageFee; // Adjusting margin by leverage fee
+        if (shortTokens > 0) {
+            uint256 totalTokens = shortTokens + tokens;
+            uint256 dilution = (tokens * PRECISION) / totalTokens;
+            leverageFee = (dilution * margin) / PRECISION;
+            adjustedMargin = margin - leverageFee;
+        }
+
+        if (adjustedMargin == 0) revert InsufficientMargin();
+
         shortProfits += leverageFee;
         shortTokens += tokens;
         shortShares += shares;
 
         shorts[msg.sender] = Position({
             active: true,
-            margin: margin,
+            margin: adjustedMargin,
             leverage: leverage,
             tokens: tokens,
             entry: entryPrice,
@@ -173,27 +178,28 @@ contract Parimutuel is Math {
         });
 
         emit OpenShort(shorts[msg.sender]);
+        return shorts[msg.sender];
     }
 
     /// @notice Close the short position of the caller.
-    function closeShort() public {
+    function closeShort() public returns (Position memory) {
         Position storage position = shorts[msg.sender];
         if (!position.active) revert NoActiveShort();
 
         uint256 _currentPrice = currentPrice();
 
         if (_currentPrice >= position.liquidation) {
-            liquidateShort(msg.sender);
+            return liquidateShort(msg.sender);
         } else if (_currentPrice > position.entry) {
-            closeShortLoss();
+            return closeShortLoss();
         } else {
-            closeShortProfit();
+            return closeShortProfit();
         }
     }
 
     /// @notice Liquidate the short position of a user.
     /// @param user The address of the user.
-    function liquidateShort(address user) internal {
+    function liquidateShort(address user) public returns (Position memory) {
         Position storage position = shorts[user];
         if (!position.active) revert NoActiveShort();
 
@@ -206,10 +212,11 @@ contract Parimutuel is Math {
 
         emit ShortLiquidated(position);
         delete shorts[user];
+        return shorts[user];
     }
 
     /// @notice Close the short position at a loss.
-    function closeShortLoss() internal {
+    function closeShortLoss() public returns (Position memory) {
         Position storage position = shorts[msg.sender];
         if (!position.active) revert NoActiveShort();
 
@@ -233,10 +240,11 @@ contract Parimutuel is Math {
 
         emit ShortClosedAtLoss(position);
         delete shorts[msg.sender];
+        return shorts[msg.sender];
     }
 
     /// @notice Close the short position at a profit.
-    function closeShortProfit() internal {
+    function closeShortProfit() public returns (Position memory) {
         Position storage position = shorts[msg.sender];
         if (!position.active) revert NoActiveShort();
 
@@ -254,13 +262,19 @@ contract Parimutuel is Math {
                 (shortShares * PRECISION);
         }
 
-        balance[msg.sender] += position.margin + profit;
+        uint256 netProfit = (profit * 99) / 100;
+        uint256 fee = profit - netProfit;
+
+        balance[admin] += fee;
+        balance[msg.sender] += position.margin + netProfit;
+
         shortProfits -= profit;
         shortTokens -= position.tokens;
         shortShares -= position.shares;
 
         emit ShortClosedAtProfit(position);
         delete shorts[msg.sender];
+        return shorts[msg.sender];
     }
 
     /// @notice Open a long position with specified margin and leverage.
@@ -269,33 +283,38 @@ contract Parimutuel is Math {
     function openLong(
         uint256 margin,
         uint256 leverage
-    ) public sufficientBalance(margin) {
+    ) public sufficientBalance(margin) returns (Position memory) {
         if (margin < MIN_MARGIN) revert InsufficientMargin();
-        if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE) {
+        if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE)
             revert InvalidLeverage();
-        }
 
         balance[msg.sender] -= margin;
 
         uint256 tokens = margin * leverage;
         uint256 entryPrice = currentPrice();
-
-        uint256 liquidationPrice = (entryPrice * (100 - leverage)) / 100;
-        uint256 profitPrice = (entryPrice * (100 + leverage)) / 100;
+        uint256 liquidationPrice = entryPrice - (entryPrice / leverage);
+        uint256 profitPrice = entryPrice + (entryPrice / leverage);
         uint256 shares = Math.sqrt(longTokens + tokens) - longShares;
 
-        uint256 totalTokens = longTokens + tokens;
-        uint256 dilution = (tokens * PRECISION) / totalTokens;
-        uint256 leverageFee = (dilution * margin) / PRECISION;
+        uint256 leverageFee = 0;
+        uint256 adjustedMargin = margin;
 
-        margin -= leverageFee;
+        if (longTokens > 0) {
+            uint256 totalTokens = longTokens + tokens;
+            uint256 dilution = (tokens * PRECISION) / totalTokens;
+            leverageFee = (dilution * margin) / PRECISION;
+            adjustedMargin = margin - leverageFee;
+        }
+
+        if (adjustedMargin == 0) revert InsufficientMargin();
+
         longProfits += leverageFee;
         longTokens += tokens;
         longShares += shares;
 
         longs[msg.sender] = Position({
             active: true,
-            margin: margin,
+            margin: adjustedMargin,
             leverage: leverage,
             tokens: tokens,
             entry: entryPrice,
@@ -306,27 +325,27 @@ contract Parimutuel is Math {
         });
 
         emit OpenLong(longs[msg.sender]);
+        return longs[msg.sender];
     }
 
-    /// @notice Close the long position of the caller.
-    function closeLong() public {
+    function closeLong() public returns (Position memory) {
         Position storage position = longs[msg.sender];
         if (!position.active) revert NoActiveLong();
 
         uint256 _currentPrice = currentPrice();
 
         if (_currentPrice <= position.liquidation) {
-            liquidateLong(msg.sender);
+            return liquidateLong(msg.sender);
         } else if (_currentPrice < position.entry) {
-            closeLongLoss();
+            return closeLongLoss();
         } else {
-            closeLongProfit();
+            return closeLongProfit();
         }
     }
 
     /// @notice Liquidate the long position of a user.
     /// @param user The address of the user.
-    function liquidateLong(address user) internal {
+    function liquidateLong(address user) public returns (Position memory) {
         Position storage position = longs[user];
         if (!position.active) revert NoActiveLong();
 
@@ -339,17 +358,19 @@ contract Parimutuel is Math {
 
         emit LongLiquidated(position);
         delete longs[user];
+        return longs[user];
     }
 
     /// @notice Close the long position at a loss.
-    function closeLongLoss() internal {
+    function closeLongLoss() public returns (Position memory) {
         Position storage position = longs[msg.sender];
         if (!position.active) revert NoActiveLong();
 
         uint256 _currentPrice = currentPrice();
+
         if (
-            _currentPrice > position.entry ||
-            _currentPrice < position.liquidation
+            _currentPrice >= position.entry ||
+            _currentPrice <= position.liquidation
         ) {
             revert NotCloseableAtLoss();
         }
@@ -365,10 +386,11 @@ contract Parimutuel is Math {
 
         emit LongClosedAtLoss(position);
         delete longs[msg.sender];
+        return longs[msg.sender];
     }
 
     /// @notice Close the long position at a profit.
-    function closeLongProfit() internal {
+    function closeLongProfit() public returns (Position memory) {
         Position storage position = longs[msg.sender];
         if (!position.active) revert NoActiveLong();
 
@@ -386,34 +408,35 @@ contract Parimutuel is Math {
                 (longShares * PRECISION);
         }
 
-        balance[msg.sender] += position.margin + profit;
+        uint256 netProfit = (profit * 99) / 100;
+        uint256 fee = profit - netProfit;
+
+        balance[admin] += fee;
+        balance[msg.sender] += position.margin + netProfit;
+
         longProfits -= profit;
         longTokens -= position.tokens;
         longShares -= position.shares;
 
         emit LongClosedAtProfit(position);
         delete longs[msg.sender];
+        return longs[msg.sender];
     }
 
     /// @notice Update the funding rate for a short position.
     /// @param user The address of the user.
-    function fundingRateShort(address user) public {
+    function fundingRateShort(address user) public returns (Position memory) {
         Position storage position = shorts[user];
         if (!position.active) revert NoActiveShort();
         if (position.funding > block.timestamp) revert FundingRateNotDue();
-
         if (shortTokens <= longTokens) {
             position.funding += FUNDING_INTERVAL;
-            return;
+            return shorts[user];
         }
 
         uint256 totalTokens = shortTokens + longTokens;
-        uint256 shortRatio = (shortTokens * 100) / totalTokens;
-        uint256 longRatio = 100 - shortRatio;
-
-        uint256 fundingFeePercentage = (shortRatio - longRatio) /
-            FUNDING_PERIODS;
-        uint256 fundingFee = (position.margin * fundingFeePercentage) / 100;
+        uint256 difference = shortTokens - longTokens;
+        uint256 fundingFee = (position.margin * difference) / totalTokens;
 
         if (fundingFee >= position.margin) {
             shortTokens -= position.tokens;
@@ -422,43 +445,38 @@ contract Parimutuel is Math {
 
             emit ShortLiquidated(position);
             delete shorts[user];
-        } else {
-            position.margin -= fundingFee;
-            longProfits += fundingFee;
-
-            position.leverage = (position.tokens * PRECISION) / position.margin;
-            position.liquidation =
-                (position.entry * (100 + position.leverage)) /
-                100;
-            position.profit =
-                (position.entry * (100 - position.leverage)) /
-                100;
-
-            position.funding += FUNDING_INTERVAL;
-
-            emit ShortFundingPaid(position);
+            return shorts[user];
         }
+
+        position.margin -= fundingFee;
+        longProfits += fundingFee;
+        position.leverage = position.tokens / position.margin;
+        position.liquidation =
+            (position.entry * ((100 * PRECISION) + position.leverage)) /
+            100;
+        position.profit =
+            (position.entry * ((100 * PRECISION) - position.leverage)) /
+            100;
+        position.funding += FUNDING_INTERVAL;
+
+        emit ShortFundingPaid(position);
+        return shorts[user];
     }
 
     /// @notice Update the funding rate for a long position.
     /// @param user The address of the user.
-    function fundingRateLong(address user) public {
+    function fundingRateLong(address user) public returns (Position memory) {
         Position storage position = longs[user];
         if (!position.active) revert NoActiveLong();
         if (position.funding > block.timestamp) revert FundingRateNotDue();
-
         if (longTokens <= shortTokens) {
             position.funding += FUNDING_INTERVAL;
-            return;
+            return longs[user];
         }
 
         uint256 totalTokens = shortTokens + longTokens;
-        uint256 longRatio = (longTokens * 100) / totalTokens;
-        uint256 shortRatio = 100 - longRatio;
-
-        uint256 fundingFeePercentage = (longRatio - shortRatio) /
-            FUNDING_PERIODS;
-        uint256 fundingFee = (position.margin * fundingFeePercentage) / 100;
+        uint256 difference = longTokens - shortTokens;
+        uint256 fundingFee = (position.margin * difference) / totalTokens;
 
         if (fundingFee >= position.margin) {
             longTokens -= position.tokens;
@@ -467,22 +485,22 @@ contract Parimutuel is Math {
 
             emit LongLiquidated(position);
             delete longs[user];
-        } else {
-            position.margin -= fundingFee;
-            shortProfits += fundingFee;
-
-            position.leverage = (position.tokens * PRECISION) / position.margin;
-            position.liquidation =
-                (position.entry * (100 - position.leverage)) /
-                100;
-            position.profit =
-                (position.entry * (100 + position.leverage)) /
-                100;
-
-            position.funding += FUNDING_INTERVAL;
-
-            emit LongFundingPaid(position);
+            return longs[user];
         }
+
+        position.margin -= fundingFee;
+        shortProfits += fundingFee;
+        position.leverage = position.tokens / position.margin;
+        position.liquidation =
+            (position.entry * ((100 * PRECISION) - position.leverage)) /
+            100;
+        position.profit =
+            (position.entry * ((100 * PRECISION) + position.leverage)) /
+            100;
+        position.funding += FUNDING_INTERVAL;
+
+        emit LongFundingPaid(position);
+        return longs[user];
     }
 
     /// @notice Add margin to a short position.
@@ -491,20 +509,23 @@ contract Parimutuel is Math {
     function addMarginShort(
         address user,
         uint256 amount
-    ) public sufficientBalance(amount) {
+    ) public sufficientBalance(amount) returns (Position memory) {
         Position storage position = shorts[user];
         if (!position.active) revert NoActiveShort();
 
         balance[user] -= amount;
         position.margin += amount;
 
-        position.leverage = (position.tokens * PRECISION) / position.margin;
-        position.profit = (position.entry * (100 - position.leverage)) / 100;
+        position.leverage = position.tokens / position.margin;
+        position.profit =
+            (position.entry * ((100 * PRECISION) - position.leverage)) /
+            100;
         position.liquidation =
-            (position.entry * (100 + position.leverage)) /
+            (position.entry * ((100 * PRECISION) + position.leverage)) /
             100;
 
         emit MarginAddedShort(position);
+        return shorts[msg.sender];
     }
 
     /// @notice Add margin to a long position.
@@ -513,19 +534,22 @@ contract Parimutuel is Math {
     function addMarginLong(
         address user,
         uint256 amount
-    ) public sufficientBalance(amount) {
+    ) public sufficientBalance(amount) returns (Position memory) {
         Position storage position = longs[user];
         if (!position.active) revert NoActiveLong();
 
         balance[user] -= amount;
         position.margin += amount;
 
-        position.leverage = (position.tokens * PRECISION) / position.margin;
-        position.profit = (position.entry * (100 + position.leverage)) / 100;
+        position.leverage = position.tokens / position.margin;
+        position.profit =
+            (position.entry * ((100 * PRECISION) + position.leverage)) /
+            100;
         position.liquidation =
-            (position.entry * (100 - position.leverage)) /
+            (position.entry * ((100 * PRECISION) - position.leverage)) /
             100;
 
         emit MarginAddedLong(position);
+        return longs[msg.sender];
     }
 }

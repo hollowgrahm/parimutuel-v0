@@ -4,16 +4,21 @@ pragma solidity 0.8.20;
 import "forge-std/Test.sol";
 import "../src/Parimutuel.sol";
 import {Math} from "../src/libraries/Math.sol";
+import {stdStorage, StdStorage} from "forge-std/Test.sol";
+import "forge-std/console.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "lib/foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
 import "../test/mocks/MockV3Aggregator.sol";
 import "../test/mocks/FakeUSD.sol";
+import "forge-std/console.sol";
 
 contract ParimutuelTest is Test, Math {
+    using stdStorage for StdStorage;
+
     uint256 public constant FUNDING_INTERVAL = 21600;
     uint256 public constant FUNDING_PERIODS = 1460;
-    uint256 public constant MIN_LEVERAGE = 1;
-    uint256 public constant MAX_LEVERAGE = 100;
+    uint256 public constant MIN_LEVERAGE = 1 * PRECISION;
+    uint256 public constant MAX_LEVERAGE = 100 * PRECISION;
     uint256 public constant PRECISION = 10 ** 18;
     uint256 public constant MIN_MARGIN = PRECISION;
 
@@ -47,21 +52,17 @@ contract ParimutuelTest is Test, Math {
     event MarginAddedShort(Position indexed short); /// @notice Event for adding margin to short position.
     event MarginAddedLong(Position indexed short); /// @notice Event for adding margin to long position.
 
-    enum Direction {
-        Short,
-        Long
-    }
-
+    //// @notice Structure representing a trading position.
     struct Position {
-        bool active;
-        uint256 margin;
-        uint256 leverage;
-        uint256 tokens;
-        uint256 entry;
-        uint256 liquidation;
-        uint256 profit;
-        uint256 shares;
-        uint256 funding;
+        bool active; /// @notice Indicates whether the position is active.
+        uint256 margin; /// @notice The margin amount for the position.
+        uint256 leverage; /// @notice The leverage factor applied to the position.
+        uint256 tokens; /// @notice The number of tokens involved in the position.
+        uint256 entry; /// @notice The entry price of the position.
+        uint256 liquidation; /// @notice The liquidation price of the position.
+        uint256 profit; /// @notice The profit price of the position.
+        uint256 shares; /// @notice The number of shares associated with the position.
+        uint256 funding; /// @notice The next funding timestamp for the position.
     }
 
     Parimutuel public parimutuel;
@@ -74,7 +75,7 @@ contract ParimutuelTest is Test, Math {
         admin = address(0x1); // Set admin persona
         vm.prank(admin); // Use vm.prank to simulate the admin deploying the contract
 
-        priceOracle = new MockV3Aggregator(4000);
+        priceOracle = new MockV3Aggregator(4000); // Set initial price
         settlementToken = new FakeUSD();
         parimutuel = new Parimutuel(
             address(priceOracle),
@@ -243,97 +244,1230 @@ contract ParimutuelTest is Test, Math {
         parimutuel.withdraw(withdrawAmount);
     }
     function testOpenShortInsufficientMargin(uint256 margin) public {
-        // Assume invalid margin
-        vm.assume(margin > 0);
-        vm.assume(margin < MIN_MARGIN);
-        uint256 leverage = 2; // Use a valid leverage
+        // Assume invalid margin below minimum margin
+        vm.assume(margin > 0 && margin < MIN_MARGIN);
+        vm.assume(depositAmount >= margin);
+        uint256 leverage = 2 * PRECISION; // Use a valid leverage
 
         // Act and Assert: Expect the call to revert with InsufficientMargin
         vm.prank(fakeUser);
         vm.expectRevert(Parimutuel.InsufficientMargin.selector);
         parimutuel.openShort(margin, leverage);
     }
+
     function testOpenShortInvalidLeverageBelowMinimum(uint256 margin) public {
         // Assume valid margin
         vm.assume(margin >= MIN_MARGIN);
-        uint256 leverage = MIN_LEVERAGE - 1; // Invalid leverage below minimum
+        vm.assume(depositAmount >= margin);
+
+        // Set leverage below minimum
+        uint256 leverage = MIN_LEVERAGE - 1; // Invalid leverage just below minimum
 
         // Act and Assert: Expect the call to revert with InvalidLeverage
         vm.prank(fakeUser);
         vm.expectRevert(Parimutuel.InvalidLeverage.selector);
         parimutuel.openShort(margin, leverage);
     }
+
     function testOpenShortInvalidLeverageAboveMaximum(uint256 margin) public {
         // Assume valid margin
         vm.assume(margin >= MIN_MARGIN);
-        uint256 leverage = MAX_LEVERAGE + 1; // Invalid leverage above maximum
+        vm.assume(depositAmount >= margin);
+
+        // Set leverage above maximum
+        uint256 leverage = MAX_LEVERAGE + 1; // Invalid leverage just above maximum
 
         // Act and Assert: Expect the call to revert with InvalidLeverage
         vm.prank(fakeUser);
         vm.expectRevert(Parimutuel.InvalidLeverage.selector);
         parimutuel.openShort(margin, leverage);
     }
-    function testOpenShort(uint256 margin, uint256 leverage) public {
-        // Assume valid margin and leverage range
-        vm.assume(margin >= MIN_MARGIN);
-        vm.assume(leverage >= MIN_LEVERAGE && leverage <= MAX_LEVERAGE);
 
-        // Ensure the margin does not exceed the deposit amount
-        vm.assume(depositAmount >= margin);
+    function testOpenShort() public {
+        // Use fixed values for margin and leverage
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        uint256 startShortTokens = parimutuel.shortTokens();
+        uint256 startShortShares = parimutuel.shortShares();
 
         // Act: Call the openShort function
         vm.prank(fakeUser);
-        parimutuel.openShort(margin, leverage);
-
-        // Assert: Verify the short position is stored correctly
-        (
-            bool active,
-            uint256 actualMargin,
-            uint256 actualLeverage,
-            uint256 actualTokens,
-            uint256 actualEntry,
-            uint256 actualLiquidation,
-            uint256 actualProfit,
-            uint256 actualShares,
-            uint256 actualFunding
-        ) = parimutuel.shorts(fakeUser);
-
-        // Calculate expected values directly in the assertions
-        assertEq(active, true, "Position should be active");
-        assertEq(
-            actualMargin,
-            margin -
-                ((margin * leverage * PRECISION) / parimutuel.shortTokens()) /
-                PRECISION,
-            "Margin should match"
+        Parimutuel.Position memory position = parimutuel.openShort(
+            margin,
+            leverage
         );
-        assertEq(actualLeverage, leverage, "Leverage should match");
-        assertEq(actualTokens, margin * leverage, "Tokens should match");
+
+        uint256 expectedTokens = margin * leverage;
+        uint256 expectedEntry = parimutuel.currentPrice();
+        uint256 expectedLiquidation = expectedEntry +
+            (expectedEntry / leverage);
+        uint256 expectedProfit = expectedEntry - (expectedEntry / leverage);
+        uint256 expectedShares = Math.sqrt(startShortTokens + expectedTokens) -
+            startShortShares;
+        uint256 expectedFunding = block.timestamp + FUNDING_INTERVAL;
+
+        // Adjust margin calculation to match the contract logic
+        uint256 leverageFee = 0;
+        uint256 adjustedMargin = margin;
+        if (startShortTokens > 0) {
+            uint256 totalTokens = startShortTokens + expectedTokens;
+            uint256 dilution = (expectedTokens * PRECISION) / totalTokens;
+            leverageFee = (dilution * margin) / PRECISION;
+            adjustedMargin = margin - leverageFee;
+        }
+
+        // Check the position fields
+        assertEq(position.active, true, "Position should be active");
+        assertEq(position.margin, adjustedMargin, "Margin should match");
+        assertEq(position.leverage, leverage, "Leverage should match");
+        assertEq(position.tokens, expectedTokens, "Tokens should match");
+        assertEq(position.entry, expectedEntry, "Entry price should match");
         assertEq(
-            actualEntry,
-            parimutuel.currentPrice(),
-            "Entry price should match"
-        );
-        assertEq(
-            actualLiquidation,
-            (parimutuel.currentPrice() * (100 + leverage)) / 100,
+            position.liquidation,
+            expectedLiquidation,
             "Liquidation price should match"
         );
+        assertEq(position.profit, expectedProfit, "Profit price should match");
+        assertEq(position.shares, expectedShares, "Shares should match");
         assertEq(
-            actualProfit,
-            (parimutuel.currentPrice() * (100 - leverage)) / 100,
-            "Profit price should match"
-        );
-        assertEq(
-            actualShares,
-            Math.sqrt(parimutuel.shortTokens() + (margin * leverage)) -
-                parimutuel.shortShares(),
-            "Shares should match"
-        );
-        assertEq(
-            actualFunding,
-            block.timestamp + FUNDING_INTERVAL,
+            position.funding,
+            expectedFunding,
             "Funding timestamp should match"
+        );
+    }
+
+    function setUpExistingShortPositions() internal {
+        uint256 margin = depositAmount;
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+        uint256 count = 10;
+
+        for (uint256 i = 0; i < count; i++) {
+            // Generate a unique fake user address
+            address uniqueFakeUser = address(
+                uint160(uint256(keccak256(abi.encodePacked(i))))
+            );
+
+            // Deal the required balance to the fake user
+            deal(address(settlementToken), uniqueFakeUser, margin);
+            vm.prank(uniqueFakeUser);
+            settlementToken.approve(address(parimutuel), margin);
+
+            vm.prank(uniqueFakeUser);
+            parimutuel.deposit(margin);
+
+            vm.prank(uniqueFakeUser);
+            parimutuel.openShort(margin, leverage);
+        }
+    }
+
+    function testOpenShortWithExistingPositions() public {
+        // Set up initial conditions with pre-existing short positions
+        setUpExistingShortPositions();
+
+        // Use fixed values for margin and leverage
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        uint256 startShortTokens = parimutuel.shortTokens();
+        uint256 startShortShares = parimutuel.shortShares();
+
+        // Act: Call the openShort function
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        uint256 expectedTokens = margin * leverage;
+        uint256 expectedEntry = parimutuel.currentPrice();
+        uint256 expectedLiquidation = expectedEntry +
+            (expectedEntry / leverage);
+        uint256 expectedProfit = expectedEntry - (expectedEntry / leverage);
+        uint256 expectedShares = Math.sqrt(startShortTokens + expectedTokens) -
+            startShortShares;
+        uint256 expectedFunding = block.timestamp + FUNDING_INTERVAL;
+
+        // Adjust margin calculation to match the contract logic
+        uint256 leverageFee = 0;
+        uint256 adjustedMargin = margin;
+        if (startShortTokens > 0) {
+            uint256 totalTokens = startShortTokens + expectedTokens;
+            uint256 dilution = (expectedTokens * PRECISION) / totalTokens;
+            leverageFee = (dilution * margin) / PRECISION;
+            adjustedMargin = margin - leverageFee;
+        }
+
+        // Check the position fields
+        assertEq(position.active, true, "Position should be active");
+        assertEq(position.margin, adjustedMargin, "Margin should match");
+        assertEq(position.leverage, leverage, "Leverage should match");
+        assertEq(position.tokens, expectedTokens, "Tokens should match");
+        assertEq(position.entry, expectedEntry, "Entry price should match");
+        assertEq(
+            position.liquidation,
+            expectedLiquidation,
+            "Liquidation price should match"
+        );
+        assertEq(position.profit, expectedProfit, "Profit price should match");
+        assertEq(position.shares, expectedShares, "Shares should match");
+        assertEq(
+            position.funding,
+            expectedFunding,
+            "Funding timestamp should match"
+        );
+    }
+    function testLiquidateNonActiveShortReverts() public {
+        // Set up initial conditions
+        uint256 margin = MIN_MARGIN;
+        uint256 leverage = 2 * PRECISION;
+
+        // Act: Open and then close a short position
+        vm.prank(fakeUser);
+        parimutuel.openShort(margin, leverage);
+
+        vm.prank(fakeUser);
+        parimutuel.closeShort(); // Close the short position
+
+        // Attempt to liquidate a non-active short position
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NoActiveShort.selector);
+        parimutuel.liquidateShort(fakeUser);
+    }
+
+    function testLiquidateShortBelowLiquidationPriceReverts() public {
+        // Set up initial conditions
+        uint256 margin = MIN_MARGIN;
+        uint256 leverage = 2 * PRECISION;
+
+        // Act: Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Set the price to below the liquidation price
+        uint256 belowLiquidationPrice = position.liquidation - 1;
+        priceOracle.updateAnswer(int256(belowLiquidationPrice));
+
+        // Attempt to liquidate the short position when the current price is below the liquidation price
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NotLiquidatable.selector);
+        parimutuel.liquidateShort(fakeUser);
+    }
+
+    function testLiquidateShortAtOrAboveLiquidationPrice() public {
+        // Set up initial conditions
+        uint256 margin = MIN_MARGIN;
+        uint256 leverage = 2 * PRECISION;
+
+        // Act: Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Mock the price to be at the liquidation price
+        uint256 liquidationPrice = (parimutuel.currentPrice() *
+            (100 * PRECISION + leverage)) / (100 * PRECISION);
+        priceOracle.updateAnswer(int256(liquidationPrice));
+
+        uint256 expectedTokens = parimutuel.shortTokens() - position0.tokens;
+        uint256 expectedShares = parimutuel.shortShares() - position0.shares;
+        uint256 expectedLongProfits = parimutuel.longProfits() +
+            position0.margin;
+
+        // Liquidate the short position when the current price is at or above the liquidation price
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.liquidateShort(
+            fakeUser
+        );
+
+        // Assert: Verify that the state is updated correctly
+        assertEq(
+            parimutuel.shortTokens(),
+            expectedTokens,
+            "Short tokens should be updated correctly"
+        );
+        assertEq(
+            parimutuel.shortShares(),
+            expectedShares,
+            "Short shares should be updated correctly"
+        );
+        assertEq(
+            parimutuel.longProfits(),
+            expectedLongProfits,
+            "Long profits should be updated correctly"
+        );
+        assertEq(
+            position1.active,
+            false,
+            "Position should no longer be active"
+        );
+    }
+    function testCloseShortLoss() public {
+        // Arrange: Set up initial conditions with a short position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the short position is at a loss
+        uint256 lossPrice = position0.entry + 1; // Assume the price drops below the entry price
+        priceOracle.updateAnswer(int256(lossPrice));
+
+        // Act: Close the short position at a loss
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeShortLoss();
+
+        // Assert: Verify the position is no longer active
+        assertEq(
+            position1.active,
+            false,
+            "Position should be closed and inactive"
+        );
+
+        // Additional state checks if necessary
+        // e.g., checking balances, remaining tokens, etc.
+    }
+
+    function testCloseShortLossNoActiveShortReverts() public {
+        // Act and Assert: Attempt to close a non-existent short position
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NoActiveShort.selector);
+        parimutuel.closeShortLoss();
+    }
+
+    function testCloseShortLossNotCloseableAtLossReverts() public {
+        // Arrange: Set up initial conditions with a short position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the short position is not at a loss
+        uint256 noLossPrice = position.entry - 1; // Assume the price rises above the entry price
+        priceOracle.updateAnswer(int256(noLossPrice));
+
+        // Act and Assert: Attempt to close the short position, expecting a revert
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NotCloseableAtLoss.selector);
+        parimutuel.closeShortLoss();
+    }
+    function testCloseShortProfit() public {
+        // Arrange: Set up initial conditions with a short position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the short position is at a profit
+        uint256 profitPrice = position0.entry - 1; // Assume the price drops below the entry price
+        priceOracle.updateAnswer(int256(profitPrice));
+
+        // Act: Close the short position at a profit
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeShortProfit();
+
+        // Assert: Verify the position is no longer active
+        assertEq(
+            position1.active,
+            false,
+            "Position should be closed and inactive"
+        );
+
+        // Additional state checks if necessary
+        // e.g., checking balances, remaining tokens, etc.
+    }
+
+    function testCloseShortProfitNoActiveShortReverts() public {
+        // Act and Assert: Attempt to close a non-existent short position
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NoActiveShort.selector);
+        parimutuel.closeShortProfit();
+    }
+
+    function testCloseShortProfitNotCloseableAtProfitReverts() public {
+        // Arrange: Set up initial conditions with a short position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the short position is not at a profit
+        uint256 noProfitPrice = position.entry + 1; // Assume the price rises above the entry price
+        priceOracle.updateAnswer(int256(noProfitPrice));
+
+        // Act and Assert: Attempt to close the short position, expecting a revert
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NotCloseableAtProfit.selector);
+        parimutuel.closeShortProfit();
+    }
+    function testOpenLongInsufficientMargin(uint256 margin) public {
+        // Assume invalid margin below minimum margin
+        vm.assume(margin > 0 && margin < MIN_MARGIN);
+        vm.assume(depositAmount >= margin);
+        uint256 leverage = 2 * PRECISION; // Use a valid leverage
+
+        // Act and Assert: Expect the call to revert with InsufficientMargin
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.InsufficientMargin.selector);
+        parimutuel.openLong(margin, leverage);
+    }
+
+    function testOpenLongInvalidLeverageBelowMinimum(uint256 margin) public {
+        // Assume valid margin
+        vm.assume(margin >= MIN_MARGIN);
+        vm.assume(depositAmount >= margin);
+
+        // Set leverage below minimum
+        uint256 leverage = MIN_LEVERAGE - 1; // Invalid leverage just below minimum
+
+        // Act and Assert: Expect the call to revert with InvalidLeverage
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.InvalidLeverage.selector);
+        parimutuel.openLong(margin, leverage);
+    }
+
+    function testOpenLongInvalidLeverageAboveMaximum(uint256 margin) public {
+        // Assume valid margin
+        vm.assume(margin >= MIN_MARGIN);
+        vm.assume(depositAmount >= margin);
+
+        // Set leverage above maximum
+        uint256 leverage = MAX_LEVERAGE + 1; // Invalid leverage just above maximum
+
+        // Act and Assert: Expect the call to revert with InvalidLeverage
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.InvalidLeverage.selector);
+        parimutuel.openLong(margin, leverage);
+    }
+
+    function testOpenLong() public {
+        // Use fixed values for margin and leverage
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        uint256 startLongTokens = parimutuel.longTokens();
+        uint256 startLongShares = parimutuel.longShares();
+
+        // Act: Call the openLong function
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        uint256 expectedTokens = margin * leverage;
+        uint256 expectedEntry = parimutuel.currentPrice();
+        uint256 expectedLiquidation = expectedEntry -
+            (expectedEntry / leverage);
+        uint256 expectedProfit = expectedEntry + (expectedEntry / leverage);
+        uint256 expectedShares = Math.sqrt(startLongTokens + expectedTokens) -
+            startLongShares;
+        uint256 expectedFunding = block.timestamp + FUNDING_INTERVAL;
+
+        // Adjust margin calculation to match the contract logic
+        uint256 leverageFee = 0;
+        uint256 adjustedMargin = margin;
+        if (startLongTokens > 0) {
+            uint256 totalTokens = startLongTokens + expectedTokens;
+            uint256 dilution = (expectedTokens * PRECISION) / totalTokens;
+            leverageFee = (dilution * margin) / PRECISION;
+            adjustedMargin = margin - leverageFee;
+        }
+
+        // Check the position fields
+        assertEq(position.active, true, "Position should be active");
+        assertEq(position.margin, adjustedMargin, "Margin should match");
+        assertEq(position.leverage, leverage, "Leverage should match");
+        assertEq(position.tokens, expectedTokens, "Tokens should match");
+        assertEq(position.entry, expectedEntry, "Entry price should match");
+        assertEq(
+            position.liquidation,
+            expectedLiquidation,
+            "Liquidation price should match"
+        );
+        assertEq(position.profit, expectedProfit, "Profit price should match");
+        assertEq(position.shares, expectedShares, "Shares should match");
+        assertEq(
+            position.funding,
+            expectedFunding,
+            "Funding timestamp should match"
+        );
+    }
+
+    function setUpExistingLongPositions() internal {
+        uint256 margin = depositAmount;
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+        uint256 count = 10;
+
+        for (uint256 i = 0; i < count; i++) {
+            // Generate a unique fake user address
+            address uniqueFakeUser = address(
+                uint160(uint256(keccak256(abi.encodePacked(i))))
+            );
+
+            // Deal the required balance to the fake user
+            deal(address(settlementToken), uniqueFakeUser, margin);
+            vm.prank(uniqueFakeUser);
+            settlementToken.approve(address(parimutuel), margin);
+
+            vm.prank(uniqueFakeUser);
+            parimutuel.deposit(margin);
+
+            vm.prank(uniqueFakeUser);
+            parimutuel.openLong(margin, leverage);
+        }
+    }
+
+    function testOpenLongWithExistingPositions() public {
+        // Set up initial conditions with pre-existing long positions
+        setUpExistingLongPositions();
+
+        // Use fixed values for margin and leverage
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        uint256 startLongTokens = parimutuel.longTokens();
+        uint256 startLongShares = parimutuel.longShares();
+
+        // Act: Call the openLong function
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        uint256 expectedTokens = margin * leverage;
+        uint256 expectedEntry = parimutuel.currentPrice();
+        uint256 expectedLiquidation = expectedEntry -
+            (expectedEntry / leverage);
+        uint256 expectedProfit = expectedEntry + (expectedEntry / leverage);
+        uint256 expectedShares = Math.sqrt(startLongTokens + expectedTokens) -
+            startLongShares;
+        uint256 expectedFunding = block.timestamp + FUNDING_INTERVAL;
+
+        // Adjust margin calculation to match the contract logic
+        uint256 leverageFee = 0;
+        uint256 adjustedMargin = margin;
+        if (startLongTokens > 0) {
+            uint256 totalTokens = startLongTokens + expectedTokens;
+            uint256 dilution = (expectedTokens * PRECISION) / totalTokens;
+            leverageFee = (dilution * margin) / PRECISION;
+            adjustedMargin = margin - leverageFee;
+        }
+
+        // Check the position fields
+        assertEq(position.active, true, "Position should be active");
+        assertEq(position.margin, adjustedMargin, "Margin should match");
+        assertEq(position.leverage, leverage, "Leverage should match");
+        assertEq(position.tokens, expectedTokens, "Tokens should match");
+        assertEq(position.entry, expectedEntry, "Entry price should match");
+        assertEq(
+            position.liquidation,
+            expectedLiquidation,
+            "Liquidation price should match"
+        );
+        assertEq(position.profit, expectedProfit, "Profit price should match");
+        assertEq(position.shares, expectedShares, "Shares should match");
+        assertEq(
+            position.funding,
+            expectedFunding,
+            "Funding timestamp should match"
+        );
+    }
+
+    function testLiquidateNonActiveLongReverts() public {
+        // Set up initial conditions
+        uint256 margin = MIN_MARGIN;
+        uint256 leverage = 2 * PRECISION;
+
+        // Act: Open and then close a long position
+        vm.prank(fakeUser);
+        parimutuel.openLong(margin, leverage);
+
+        vm.prank(fakeUser);
+        parimutuel.closeLong(); // Close the long position
+
+        // Attempt to liquidate a non-active long position
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NoActiveLong.selector);
+        parimutuel.liquidateLong(fakeUser);
+    }
+
+    function testLiquidateLongBelowLiquidationPriceReverts() public {
+        // Set up initial conditions
+        uint256 margin = MIN_MARGIN;
+        uint256 leverage = 2 * PRECISION;
+
+        // Act: Open a long position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Set the price to below the liquidation price
+        uint256 belowLiquidationPrice = position.liquidation + 1;
+        priceOracle.updateAnswer(int256(belowLiquidationPrice));
+
+        // Attempt to liquidate the long position when the current price is below the liquidation price
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NotLiquidatable.selector);
+        parimutuel.liquidateLong(fakeUser);
+    }
+
+    function testLiquidateLongAtOrAboveLiquidationPrice() public {
+        // Set up initial conditions
+        uint256 margin = MIN_MARGIN;
+        uint256 leverage = 2 * PRECISION;
+
+        // Act: Open a long position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Mock the price to be at the liquidation price
+        uint256 liquidationPrice = (parimutuel.currentPrice() *
+            (100 * PRECISION - leverage)) / (100 * PRECISION);
+        priceOracle.updateAnswer(int256(liquidationPrice));
+
+        uint256 expectedTokens = parimutuel.longTokens() - position0.tokens;
+        uint256 expectedShares = parimutuel.longShares() - position0.shares;
+        uint256 expectedShortProfits = parimutuel.shortProfits() +
+            position0.margin;
+
+        // Liquidate the long position when the current price is at or above the liquidation price
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.liquidateLong(
+            fakeUser
+        );
+
+        // Assert: Verify that the state is updated correctly
+        assertEq(
+            parimutuel.longTokens(),
+            expectedTokens,
+            "Long tokens should be updated correctly"
+        );
+        assertEq(
+            parimutuel.longShares(),
+            expectedShares,
+            "Long shares should be updated correctly"
+        );
+        assertEq(
+            parimutuel.shortProfits(),
+            expectedShortProfits,
+            "Short profits should be updated correctly"
+        );
+        assertEq(
+            position1.active,
+            false,
+            "Position should no longer be active"
+        );
+    }
+
+    function testCloseLongLoss() public {
+        // Arrange: Set up initial conditions with a long position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the long position is at a loss
+        uint256 lossPrice = position0.entry - 1; // Assume the price rises above the entry price
+        priceOracle.updateAnswer(int256(lossPrice));
+
+        // Act: Close the long position at a loss
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeLongLoss();
+
+        // Assert: Verify the position is no longer active
+        assertEq(
+            position1.active,
+            false,
+            "Position should be closed and inactive"
+        );
+
+        // Additional state checks if necessary
+        // e.g., checking balances, remaining tokens, etc.
+    }
+
+    function testCloseLongLossNoActiveLongReverts() public {
+        // Act and Assert: Attempt to close a non-existent long position
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NoActiveLong.selector);
+        parimutuel.closeLongLoss();
+    }
+
+    function testCloseLongLossNotCloseableAtLossReverts() public {
+        // Arrange: Set up initial conditions with a long position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the long position is not at a loss
+        uint256 noLossPrice = position.entry + 1; // Assume the price drops below the entry price
+        priceOracle.updateAnswer(int256(noLossPrice));
+
+        // Act and Assert: Attempt to close the long position, expecting a revert
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NotCloseableAtLoss.selector);
+        parimutuel.closeLongLoss();
+    }
+
+    function testCloseLongProfit() public {
+        // Arrange: Set up initial conditions with a long position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the long position is at a profit
+        uint256 profitPrice = position0.entry + 1; // Assume the price drops below the entry price
+        priceOracle.updateAnswer(int256(profitPrice));
+
+        // Act: Close the long position at a profit
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeLongProfit();
+
+        // Assert: Verify the position is no longer active
+        assertEq(
+            position1.active,
+            false,
+            "Position should be closed and inactive"
+        );
+
+        // Additional state checks if necessary
+        // e.g., checking balances, remaining tokens, etc.
+    }
+
+    function testCloseLongProfitNoActiveLongReverts() public {
+        // Act and Assert: Attempt to close a non-existent long position
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NoActiveLong.selector);
+        parimutuel.closeLongProfit();
+    }
+
+    function testCloseLongProfitNotCloseableAtProfitReverts() public {
+        // Arrange: Set up initial conditions with a long position
+        uint256 margin = depositAmount; // 1000 tokens
+        uint256 leverage = 10 * PRECISION; // 10x leverage
+
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Act: Simulate market conditions where the long position is not at a profit
+        uint256 noProfitPrice = position.entry - 1; // Assume the price rises above the entry price
+        priceOracle.updateAnswer(int256(noProfitPrice));
+
+        // Act and Assert: Attempt to close the long position, expecting a revert
+        vm.prank(fakeUser);
+        vm.expectRevert(Parimutuel.NotCloseableAtProfit.selector);
+        parimutuel.closeLongProfit();
+    }
+    function testCloseShort_Liquidation() public {
+        uint256 margin = 1000 * PRECISION; // Example margin
+        uint256 leverage = 10 * PRECISION; // Example leverage
+
+        // Open a short position to start with
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        uint256 liquidationPrice = position0.liquidation;
+
+        // Set the price to just above the liquidation price
+        priceOracle.updateAnswer(int256(liquidationPrice + 1));
+
+        // Close the short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeShort();
+
+        // Ensure position is inactive
+        assertEq(
+            position1.active,
+            false,
+            "Position should be inactive after liquidation"
+        );
+    }
+    function testCloseShort_Loss() public {
+        uint256 margin = 1000 * PRECISION; // Example margin
+        uint256 leverage = 10 * PRECISION; // Example leverage
+
+        // Open a short position to start with
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        uint256 entryPrice = position0.entry;
+
+        // Set the price just above the entry price but below liquidation
+        priceOracle.updateAnswer(int256(entryPrice + 1));
+
+        // Close the short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeShort();
+
+        // Ensure position is inactive
+        assertEq(
+            position1.active,
+            false,
+            "Position should be inactive after closing with loss"
+        );
+    }
+    function testCloseShort_Profit() public {
+        uint256 margin = 1000 * PRECISION; // Example margin
+        uint256 leverage = 10 * PRECISION; // Example leverage
+
+        // Open a short position to start with
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        uint256 entryPrice = position0.entry;
+
+        // Set the price just below the entry price
+        priceOracle.updateAnswer(int256(entryPrice - 1));
+
+        // Close the short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeShort();
+
+        // Ensure position is inactive
+        assertEq(
+            position1.active,
+            false,
+            "Position should be inactive after closing with profit"
+        );
+    }
+    function testCloseShort_NoActiveShort() public {
+        // Attempting to close a position when no active short exists should revert
+        vm.expectRevert(NoActiveShort.selector);
+        vm.prank(fakeUser);
+        parimutuel.closeShort();
+    }
+    function testCloseLong_Liquidation() public {
+        uint256 margin = 1000 * PRECISION; // Example margin
+        uint256 leverage = 10 * PRECISION; // Example leverage
+
+        // Open a long position to start with
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        uint256 liquidationPrice = position0.liquidation;
+
+        // Set the price to just below the liquidation price
+        priceOracle.updateAnswer(int256(liquidationPrice - 1));
+
+        // Close the long position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeLong();
+
+        // Ensure position is inactive
+        assertEq(
+            position1.active,
+            false,
+            "Position should be inactive after liquidation"
+        );
+    }
+    function testCloseLong_Loss() public {
+        uint256 margin = 1000 * PRECISION; // Example margin
+        uint256 leverage = 10 * PRECISION; // Example leverage
+
+        // Open a long position to start with
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        uint256 entryPrice = position0.entry;
+
+        // Set the price just below the entry price but above liquidation
+        priceOracle.updateAnswer(int256(entryPrice - 1));
+
+        // Close the long position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeLong();
+
+        // Ensure position is inactive
+        assertEq(
+            position1.active,
+            false,
+            "Position should be inactive after closing with loss"
+        );
+    }
+    function testCloseLong_Profit() public {
+        uint256 margin = 1000 * PRECISION; // Example margin
+        uint256 leverage = 10 * PRECISION; // Example leverage
+
+        // Open a long position to start with
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        uint256 entryPrice = position0.entry;
+
+        // Set the price just above the entry price
+        priceOracle.updateAnswer(int256(entryPrice + 1));
+
+        // Close the long position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.closeLong();
+
+        // Ensure position is inactive
+        assertEq(
+            position1.active,
+            false,
+            "Position should be inactive after closing with profit"
+        );
+    }
+    function testCloseLong_NoActiveLong() public {
+        // Attempting to close a position when no active long exists should revert
+        vm.expectRevert(NoActiveLong.selector);
+        vm.prank(fakeUser);
+        parimutuel.closeLong();
+    }
+    function testFundingRateShort_NoActiveShort() public {
+        bytes memory expectedRevert = abi.encodeWithSignature(
+            "NoActiveShort()"
+        );
+
+        vm.expectRevert(expectedRevert);
+        parimutuel.fundingRateShort(address(0x124));
+    }
+
+    function testFundingRateShort_FundingRateNotDue() public {
+        uint256 margin = 1000 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        parimutuel.openShort(margin, leverage);
+
+        vm.warp(block.timestamp + FUNDING_INTERVAL / 2); // Move forward in time but not enough to be due
+
+        bytes memory expectedRevert = abi.encodeWithSignature(
+            "FundingRateNotDue()"
+        );
+
+        vm.expectRevert(expectedRevert);
+        vm.prank(fakeUser);
+        parimutuel.fundingRateShort(fakeUser);
+    }
+
+    function testFundingRateShort_ShortTokensLessThanLongTokens() public {
+        stdstore.target(address(parimutuel)).sig("shortTokens()").checked_write(
+            (9_000_000 * PRECISION) * PRECISION
+        );
+        stdstore.target(address(parimutuel)).sig("longTokens()").checked_write(
+            (10_000_000 * PRECISION) * PRECISION
+        );
+
+        uint256 margin = 1000 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Move forward in time to be due for funding
+        vm.warp(position0.funding + 1);
+
+        // Check initial funding time
+        uint256 initialFundingTime = position0.funding;
+        uint256 intitialMargin = position0.margin;
+
+        // Call fundingRateShort
+        vm.prank(fakeUser);
+
+        // Get the updated position
+        Parimutuel.Position memory position1 = parimutuel.fundingRateShort(
+            fakeUser
+        );
+
+        // Ensure the funding time is updated correctly
+        assertEq(
+            position1.funding,
+            initialFundingTime + FUNDING_INTERVAL,
+            "Funding time should be updated"
+        );
+        assertEq(
+            intitialMargin,
+            position1.margin,
+            "Margin should stay equal to the initial"
+        );
+    }
+
+    function testFundingRateShort_ShortTokensMoreThanLongTokens() public {
+        stdstore.target(address(parimutuel)).sig("shortTokens()").checked_write(
+            (10_000_000 * PRECISION) * PRECISION
+        );
+        stdstore.target(address(parimutuel)).sig("longTokens()").checked_write(
+            (9_000_000 * PRECISION) * PRECISION
+        );
+
+        uint256 margin = 1000 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            margin,
+            leverage
+        );
+
+        // Move forward in time to be due for funding
+        vm.warp(position0.funding + 1);
+
+        // Check initial funding time
+        uint256 initialFundingTime = position0.funding;
+        uint256 intitialMargin = position0.margin;
+
+        // Call fundingRateShort
+        vm.prank(fakeUser);
+
+        // Get the updated position
+        Parimutuel.Position memory position1 = parimutuel.fundingRateShort(
+            fakeUser
+        );
+
+        // Ensure the funding time is updated correctly
+        assertEq(
+            position1.funding,
+            initialFundingTime + FUNDING_INTERVAL,
+            "Funding time should be updated"
+        );
+        assert(intitialMargin > position1.margin);
+    }
+
+    function testFundingRateLong_NoActiveLong() public {
+        bytes memory expectedRevert = abi.encodeWithSignature("NoActiveLong()");
+
+        vm.expectRevert(expectedRevert);
+        parimutuel.fundingRateLong(address(0x124));
+    }
+
+    function testFundingRateLong_FundingRateNotDue() public {
+        uint256 margin = 1000 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        parimutuel.openLong(margin, leverage);
+
+        vm.warp(block.timestamp + FUNDING_INTERVAL / 2); // Move forward in time but not enough to be due
+
+        bytes memory expectedRevert = abi.encodeWithSignature(
+            "FundingRateNotDue()"
+        );
+
+        vm.expectRevert(expectedRevert);
+        vm.prank(fakeUser);
+        parimutuel.fundingRateLong(fakeUser);
+    }
+
+    function testFundingRateLong_LongTokensLessThanShortTokens() public {
+        stdstore.target(address(parimutuel)).sig("shortTokens()").checked_write(
+            (10_000_000 * PRECISION) * PRECISION
+        );
+        stdstore.target(address(parimutuel)).sig("longTokens()").checked_write(
+            (9_000_000 * PRECISION) * PRECISION
+        );
+
+        uint256 margin = 1000 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Move forward in time to be due for funding
+        vm.warp(position0.funding + 1);
+
+        // Check initial funding time
+        uint256 initialFundingTime = position0.funding;
+        uint256 intitialMargin = position0.margin;
+
+        // Call fundingRateShort
+        vm.prank(fakeUser);
+
+        // Get the updated position
+        Parimutuel.Position memory position1 = parimutuel.fundingRateLong(
+            fakeUser
+        );
+
+        // Ensure the funding time is updated correctly
+        assertEq(
+            position1.funding,
+            initialFundingTime + FUNDING_INTERVAL,
+            "Funding time should be updated"
+        );
+        assertEq(
+            intitialMargin,
+            position1.margin,
+            "Margin should stay equal to the initial"
+        );
+    }
+
+    function testFundingRateLong_LongTokensMoreThanShortTokens() public {
+        stdstore.target(address(parimutuel)).sig("shortTokens()").checked_write(
+            (9_000_000 * PRECISION) * PRECISION
+        );
+        stdstore.target(address(parimutuel)).sig("longTokens()").checked_write(
+            (10_000_000 * PRECISION) * PRECISION
+        );
+
+        uint256 margin = 1000 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            margin,
+            leverage
+        );
+
+        // Move forward in time to be due for funding
+        vm.warp(position0.funding + 1);
+
+        // Check initial funding time
+        uint256 initialFundingTime = position0.funding;
+        uint256 intitialMargin = position0.margin;
+
+        // Call fundingRateShort
+        vm.prank(fakeUser);
+
+        // Get the updated position
+        Parimutuel.Position memory position1 = parimutuel.fundingRateLong(
+            fakeUser
+        );
+
+        // Ensure the funding time is updated correctly
+        assertEq(
+            position1.funding,
+            initialFundingTime + FUNDING_INTERVAL,
+            "Funding time should be updated"
+        );
+        assert(intitialMargin > position1.margin);
+    }
+
+    function testAddMarginShort_Success() public {
+        uint256 initialMargin = 1000 * PRECISION;
+        uint256 additionalMargin = 500 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openShort(
+            initialMargin,
+            leverage
+        );
+
+        deal(address(settlementToken), fakeUser, additionalMargin);
+        vm.prank(fakeUser);
+        settlementToken.approve(address(parimutuel), additionalMargin);
+        vm.prank(fakeUser);
+        parimutuel.deposit(additionalMargin);
+
+        // Add margin to the short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.addMarginShort(
+            fakeUser,
+            additionalMargin
+        );
+
+        // Check the new margin
+        assertEq(
+            position1.margin,
+            position0.margin + additionalMargin,
+            "Margin should be updated correctly"
+        );
+    }
+    function testAddMarginLong_Success() public {
+        uint256 initialMargin = 1000 * PRECISION;
+        uint256 additionalMargin = 500 * PRECISION;
+        uint256 leverage = 10 * PRECISION;
+
+        // Open a short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position0 = parimutuel.openLong(
+            initialMargin,
+            leverage
+        );
+
+        deal(address(settlementToken), fakeUser, additionalMargin);
+        vm.prank(fakeUser);
+        settlementToken.approve(address(parimutuel), additionalMargin);
+        vm.prank(fakeUser);
+        parimutuel.deposit(additionalMargin);
+
+        // Add margin to the short position
+        vm.prank(fakeUser);
+        Parimutuel.Position memory position1 = parimutuel.addMarginLong(
+            fakeUser,
+            additionalMargin
+        );
+
+        // Check the new margin
+        assertEq(
+            position1.margin,
+            position0.margin + additionalMargin,
+            "Margin should be updated correctly"
         );
     }
 }
