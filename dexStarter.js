@@ -24,7 +24,8 @@ mongoose.connect(process.env.MONGO_URI, {
 }).then(() => console.log('MongoDB connected'))
   .catch(err => console.log(err));
 
-async function liquidateShort(user) {
+//liquidate short position
+  async function liquidateShort(user) {
     try {
         const data = contract.methods.liquidateShort(user).encodeABI();
 
@@ -52,7 +53,7 @@ async function liquidateShort(user) {
 }
 
 async function checkAndLiquidate() {
-    // Example: Array of user addresses to check
+    // Array of user addresses to check
     const users = ['0xUserAddress1', '0xUserAddress2']; // Replace with actual user addresses
 
     for (const user of users) {
@@ -60,7 +61,68 @@ async function checkAndLiquidate() {
     }
 }
 
-// Looping function
+// Function to liquidate long position
+async function liquidateLong(user) {
+    try {
+        const data = contract.methods.liquidateLong(user).encodeABI();
+
+        const tx = {
+            to: contractAddress,
+            data,
+            gas: 200000,
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log(`Liquidate long position transaction hash: ${receipt.transactionHash}`);
+        await recordEvent(user, receipt.transactionHash, 'LongLiquidation');
+    } catch (error) {
+        console.error(`Error liquidating long position for user ${user}: ${error.message}`);
+    }
+}
+
+// Function to update funding rate for short position
+async function fundingRateShort(user) {
+    try {
+        const data = contract.methods.fundingRateShort(user).encodeABI();
+
+        const tx = {
+            to: contractAddress,
+            data,
+            gas: 200000,
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log(`Funding rate short position transaction hash: ${receipt.transactionHash}`);
+        await recordEvent(user, receipt.transactionHash, 'ShortFundingRate');
+    } catch (error) {
+        console.error(`Error updating funding rate for short position for user ${user}: ${error.message}`);
+    }
+}
+
+async function fundingRateLong(user) {
+    try {
+        const data = contract.methods.fundingRateLong(user).encodeABI();
+
+        const tx = {
+            to: contractAddress,
+            data,
+            gas: 200000,
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log(`Funding rate long position transaction hash: ${receipt.transactionHash}`);
+        await recordEvent(user, receipt.transactionHash, 'LongFundingRate');
+    } catch (error) {
+        console.error(`Error updating funding rate for long position for user ${user}: ${error.message}`);
+    }
+}
+// Loop function
 async function startBot() {
     while (true) {
         await checkAndLiquidate();
@@ -81,7 +143,7 @@ module.exports = mongoose.model('Event', eventSchema);
 
 
 
-// Start the bot
+// Starts  bot
 startBot().catch(err => console.error(err));
 
 
@@ -91,8 +153,18 @@ startBot().catch(err => console.error(err));
 
 //liquidate short
 //liquidate long
-//funcding rate long and funding rate short  
+//funding rate long and funding rate short  
 
 //have the database log the events for line 41-51
+//anyone should be able to call a function 
 
 
+
+// Example usage
+(async () => {
+    const userAddress = '0xYourUserAddressHere'; // Replace with the actual user address
+    await liquidateShort(userAddress);
+    await liquidateLong(userAddress);
+    await fundingRateShort(userAddress);
+    await fundingRateLong(userAddress);
+})();
