@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.20;
 
 //    _______     __        _______    __     ___      ___  ____  ____  ___________  ____  ____   _______  ___
@@ -12,11 +12,12 @@ pragma solidity 0.8.20;
 import {Math} from "./libraries/Math.sol";
 import "forge-std/console.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "lib/foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
+import "@redstone-finance/evm-connector/contracts/data-services/MainDemoConsumerBase.sol";
+//import "lib/foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
 
 contract Parimutuel is Math {
     address public admin; /// @notice Address of the admin.
-    AggregatorV3Interface public priceOracle; /// @notice Price oracle interface.
+    address public priceOracle; /// @notice Price oracle interface.
     //IERC20 public settlementToken; /// @notice Settlement token interface.
 
     uint256 public shortTokens; /// @notice Total short tokens.
@@ -81,9 +82,7 @@ contract Parimutuel is Math {
     ///  _priceOracle Address of the price oracle.
     ///  _settlementToken Address of the settlement token.
     constructor() /*address _priceOracle, address _settlementToken */ {
-        priceOracle = AggregatorV3Interface(
-            0x89e60b56efD70a1D4FBBaE947bC33cae41e37A72
-        ); //Redstone ETH / USD Price Feed
+        priceOracle = 0x89e60b56efD70a1D4FBBaE947bC33cae41e37A72; //Redstone ETH / USD Price Feed
         //settlementToken = IERC20(_settlementToken);
         admin = msg.sender;
     }

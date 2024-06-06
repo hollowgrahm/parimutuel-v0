@@ -9,4 +9,6 @@ erc4626-tests/=lib/openzeppelin-contracts/lib/erc4626-tests/
 forge-std/=lib/forge-std/src/
 @chainlink/=lib/foundry-chainlink-toolkit/
 openzeppelin-contracts/=lib/openzeppelin-contracts/
-@chainlink=smartcontractkit/chainlink-brownie-contracts@0.2.1
+@chainlink=smartcontractkit/chainlink-brownie-contracts@0.2.1@redstone-finance/evm-connector/dist/contracts/=lib/redstone-oracles-monorepo/packages/evm-connector/contracts/
+@openzeppelin/contracts=lib/openzeppelin-contracts/contracts/
+@redstone-finance/evm-connector/dist/contracts/=lib/redstone-oracles-monorepo/packages/evm-connector/contracts/@openzeppelin/contracts=lib/openzeppelin-contracts/contracts/
