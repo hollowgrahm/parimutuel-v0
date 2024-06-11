@@ -52,14 +52,6 @@ async function liquidateShort(user) {
     }
 }
 
-// Check and liquidate function
-async function checkAndLiquidate() {
-    const users = ['0xUserAddress1', '0xUserAddress2']; // Replace with actual user addresses
-    for (const user of users) {
-        await liquidateShort(user);
-    }
-}
-
 // Function to liquidate long position
 async function liquidateLong(user) {
     try {
@@ -120,6 +112,14 @@ async function fundingRateLong(user) {
         await recordEvent(user, receipt.transactionHash, 'LongFundingRate');
     } catch (error) {
         console.error(`Error updating funding rate for long position for user ${user}: ${error.message}`);
+    }
+}
+
+// Check and liquidate function
+async function checkAndLiquidate() {
+    const users = ['0xUserAddress1', '0xUserAddress2']; // Replace with actual user addresses
+    for (const user of users) {
+        await liquidateShort(user);
     }
 }
 
