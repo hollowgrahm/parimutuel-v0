@@ -1,8 +1,7 @@
 const Web3 = require('web3');
 const fs = require('fs');
 const dotenv = require('dotenv');
-const mongoose = require('mongoose');
-const Event = require('./models/Event');
+const Moralis = require('moralis').default;
 
 dotenv.config();
 
@@ -17,15 +16,23 @@ web3.eth.defaultAccount = account.address;
 
 const contract = new web3.eth.Contract(contractABI, contractAddress);
 
-// MongoDB connection
-mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => console.log('MongoDB connected'))
-  .catch(err => console.log(err));
+// Initialize Moralis
+const serverUrl = process.env.MORALIS_SERVER_URL;
+const appId = process.env.MORALIS_APP_ID;
+Moralis.start({ serverUrl, appId });
 
-//liquidate short position
-  async function liquidateShort(user) {
+// Function to record event
+async function recordEvent(user, transactionHash, eventType) {
+    const Event = Moralis.Object.extend("Event");
+    const event = new Event();
+    event.set("user", user);
+    event.set("transactionHash", transactionHash);
+    event.set("eventType", eventType);
+    await event.save();
+}
+
+// Liquidate short position
+async function liquidateShort(user) {
     try {
         const data = contract.methods.liquidateShort(user).encodeABI();
 
@@ -39,23 +46,15 @@ mongoose.connect(process.env.MONGO_URI, {
         const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
 
         console.log(`Liquidate short position transaction hash: ${receipt.transactionHash}`);
-
-        // Record the event in the database
-        const event = new Event({
-            user: user,
-            transactionHash: receipt.transactionHash,
-        });
-        await event.save();
-
+        await recordEvent(user, receipt.transactionHash, 'ShortLiquidation');
     } catch (error) {
         console.error(`Error liquidating short position for user ${user}: ${error.message}`);
     }
 }
 
+// Check and liquidate function
 async function checkAndLiquidate() {
-    // Array of user addresses to check
     const users = ['0xUserAddress1', '0xUserAddress2']; // Replace with actual user addresses
-
     for (const user of users) {
         await liquidateShort(user);
     }
@@ -103,6 +102,7 @@ async function fundingRateShort(user) {
     }
 }
 
+// Function to update funding rate for long position
 async function fundingRateLong(user) {
     try {
         const data = contract.methods.fundingRateLong(user).encodeABI();
@@ -122,6 +122,7 @@ async function fundingRateLong(user) {
         console.error(`Error updating funding rate for long position for user ${user}: ${error.message}`);
     }
 }
+
 // Loop function
 async function startBot() {
     while (true) {
@@ -130,35 +131,8 @@ async function startBot() {
     }
 }
 
-const eventSchema = new mongoose.Schema({
-    user: String,
-    transactionHash: String,
-    eventType: String,
-    timestamp: { type: Date, default: Date.now },
-});
-
-module.exports = mongoose.model('Event', eventSchema);
-
-
-
-
-
-// Starts  bot
+// Starts bot
 startBot().catch(err => console.error(err));
-
-
-
-
-//create a bot or loop that itterates through DB 
-
-//liquidate short
-//liquidate long
-//funding rate long and funding rate short  
-
-//have the database log the events for line 41-51
-//anyone should be able to call a function 
-
-
 
 // Example usage
 (async () => {

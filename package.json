@@ -1,5 +1,6 @@
 {
   "dependencies": {
-    "@redstone-finance/evm-connector": "^0.5.1"
+    "@redstone-finance/evm-connector": "^0.5.1",
+    "web3": "^4.9.0"
   }
 }
